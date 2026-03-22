@@ -16,6 +16,7 @@ router.use('/roles', require('./roles.routes'));
 router.use('/check', require('./check.routes'));
 router.use('/generate', require('./generate.routes'));
 router.use('/search', require('./search.routes'));
+router.use('/meta', require('./meta.routes'));
 
 
 const permissionsRoutes = require('./permissions.routes');

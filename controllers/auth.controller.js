@@ -6,11 +6,20 @@ const {
     signInWithSupabase,
     signUpWithSupabase,
     sendPasswordRecoveryEmail,
+    resendSignupVerificationEmail,
     updatePasswordWithAccessToken
 } = require('../services/supabase.service');
 
 const SUPABASE_PASSWORD_PLACEHOLDER = 'SUPABASE_MANAGED_PASSWORD';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4321';
+
+const logInternalError = (scope, error) => {
+    console.error(`[${scope}]`, error);
+};
+
+const isPrismaUniqueConstraintError = (error) => {
+    return error && error.code === 'P2002';
+};
 
 const getDefaultUserRole = async () => {
     let role = await prisma.role.findUnique({ where: { name: 'USER' } });
@@ -99,7 +108,8 @@ exports.login = async (req, res) => {
             }
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        logInternalError('auth.login', error);
+        res.status(500).json({ error: 'No se pudo iniciar sesion. Intenta nuevamente.' });
     }
 };
 
@@ -137,8 +147,11 @@ exports.register = async (req, res) => {
         });
 
         if (signUpError) {
-            const status = /already registered|already exists/i.test(signUpError.message) ? 409 : 400;
-            return res.status(status).json({ error: signUpError.message || 'No se pudo registrar en Supabase Auth' });
+            const alreadyExists = /already registered|already exists|user already exists/i.test(signUpError.message || '');
+            if (alreadyExists) {
+                return res.status(409).json({ error: 'El correo ya esta registrado.' });
+            }
+            return res.status(400).json({ error: 'No se pudo completar el registro. Verifica tus datos.' });
         }
 
         const supabaseEmail = signUpData?.user?.email || signUpData?.user?.identities?.[0]?.identity_data?.email || email;
@@ -158,12 +171,41 @@ exports.register = async (req, res) => {
         });
 
         res.status(201).json({
-            message: 'Usuario registrado correctamente. Revisa tu correo para verificar la cuenta.',
+            message: 'Cuenta creada. Te enviamos un correo para confirmar tu email antes de iniciar sesion.',
             user: { id: user.id, email: user.email, name: user.name }
         });
     } catch (error) {
-        console.error("Register Error:", error);
-        res.status(500).json({ error: error.message });
+        logInternalError('auth.register', error);
+
+        if (isPrismaUniqueConstraintError(error)) {
+            return res.status(409).json({ error: 'El correo ya esta registrado.' });
+        }
+
+        return res.status(500).json({ error: 'No se pudo crear la cuenta. Intenta nuevamente.' });
+    }
+};
+
+exports.resendVerification = async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email es obligatorio' });
+    }
+
+    if (!hasSupabaseAuthConfig) {
+        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
+    }
+
+    try {
+        const redirectTo = `${FRONTEND_URL}/login?verified=1`;
+        await resendSignupVerificationEmail({ email, redirectTo });
+
+        return res.json({
+            message: 'Si el correo existe, enviamos un nuevo enlace de verificacion.'
+        });
+    } catch (error) {
+        logInternalError('auth.resendVerification', error);
+        return res.status(500).json({ error: 'No se pudo procesar la solicitud. Intenta nuevamente.' });
     }
 };
 
@@ -178,12 +220,17 @@ exports.forgotPassword = async (req, res) => {
         return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
     }
 
-    const redirectTo = `${FRONTEND_URL}/reset-password`;
-    await sendPasswordRecoveryEmail({ email, redirectTo });
+    try {
+        const redirectTo = `${FRONTEND_URL}/reset-password`;
+        await sendPasswordRecoveryEmail({ email, redirectTo });
 
-    return res.json({
-        message: 'Si el correo existe, enviamos instrucciones para recuperar la contrasena.'
-    });
+        return res.json({
+            message: 'Si el correo existe, enviamos instrucciones para recuperar la contrasena.'
+        });
+    } catch (error) {
+        logInternalError('auth.forgotPassword', error);
+        return res.status(500).json({ error: 'No se pudo procesar la solicitud. Intenta nuevamente.' });
+    }
 };
 
 exports.resetPassword = async (req, res) => {
@@ -197,16 +244,21 @@ exports.resetPassword = async (req, res) => {
         return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
     }
 
-    const { error } = await updatePasswordWithAccessToken({
-        accessToken,
-        newPassword
-    });
+    try {
+        const { error } = await updatePasswordWithAccessToken({
+            accessToken,
+            newPassword
+        });
 
-    if (error) {
-        return res.status(400).json({ error: error.message || 'No se pudo actualizar la contrasena' });
+        if (error) {
+            return res.status(400).json({ error: 'El enlace no es valido o ya expiro. Solicita uno nuevo.' });
+        }
+
+        return res.json({ message: 'Contrasena actualizada correctamente' });
+    } catch (error) {
+        logInternalError('auth.resetPassword', error);
+        return res.status(500).json({ error: 'No se pudo actualizar la contrasena. Intenta nuevamente.' });
     }
-
-    return res.json({ message: 'Contrasena actualizada correctamente' });
 };
 
 exports.logout = (req, res) => {

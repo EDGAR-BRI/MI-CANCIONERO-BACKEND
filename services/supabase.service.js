@@ -62,6 +62,20 @@ const sendPasswordRecoveryEmail = async ({ email, redirectTo }) => {
     });
 };
 
+const resendSignupVerificationEmail = async ({ email, redirectTo }) => {
+    if (!authClient) {
+        return { data: null, error: { message: 'Supabase auth is not configured' } };
+    }
+
+    return authClient.auth.resend({
+        type: 'signup',
+        email,
+        options: {
+            emailRedirectTo: redirectTo
+        }
+    });
+};
+
 const updatePasswordWithAccessToken = async ({ accessToken, newPassword }) => {
     if (!authClient) {
         return { data: null, error: { message: 'Supabase auth is not configured' } };
@@ -108,6 +122,7 @@ module.exports = {
     signInWithSupabase,
     signUpWithSupabase,
     sendPasswordRecoveryEmail,
+    resendSignupVerificationEmail,
     updatePasswordWithAccessToken,
     createUserWithSupabaseAdmin,
     getSupabaseUserFromToken
