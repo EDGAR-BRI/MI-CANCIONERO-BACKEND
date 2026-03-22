@@ -12,6 +12,8 @@ const {
 
 const SUPABASE_PASSWORD_PLACEHOLDER = 'SUPABASE_MANAGED_PASSWORD';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4321';
+const REFRESH_COOKIE_NAME = 'refresh_token';
+const REFRESH_COOKIE_MAX_AGE_MS = (Number(process.env.REFRESH_TOKEN_COOKIE_DAYS) || 30) * 24 * 60 * 60 * 1000;
 
 const logInternalError = (scope, error) => {
     console.error(`[${scope}]`, error);
@@ -41,7 +43,7 @@ const findUserWithAuthDataByEmail = async (email) => {
 };
 
 exports.login = async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, rememberMe = true } = req.body;
 
     if (!email || !password) {
         return res.status(400).json({ error: 'Email y password son obligatorios' });
@@ -87,19 +89,35 @@ exports.login = async (req, res) => {
         }
 
         const token = signInData.session.access_token;
+        const refreshToken = signInData.session.refresh_token;
         const permissions = user.role.permissions.map(p => p.name);
+        const accessTokenMaxAgeMs = (signInData.session.expires_in || 24 * 60 * 60) * 1000;
 
-        // Set Cookie
-        res.cookie('token', token, {
+        const baseCookieOptions = {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
-            maxAge: (signInData.session.expires_in || 24 * 60 * 60) * 1000,
-            sameSite: 'lax' // Allows cookie to be sent on same-site navigation
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax'
+        };
+
+        // Access token cookie
+        res.cookie('token', token, {
+            ...baseCookieOptions,
+            ...(rememberMe ? { maxAge: accessTokenMaxAgeMs } : {})
         });
+
+        // Refresh token cookie for transparent renewals
+        if (refreshToken) {
+            res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+                ...baseCookieOptions,
+                ...(rememberMe ? { maxAge: REFRESH_COOKIE_MAX_AGE_MS } : {})
+            });
+        }
 
         res.json({
             message: 'Login successful',
             token,
+            refreshToken,
+            expiresIn: signInData.session.expires_in,
             user: {
                 id: user.id,
                 email: user.email,
@@ -263,6 +281,7 @@ exports.resetPassword = async (req, res) => {
 
 exports.logout = (req, res) => {
     res.clearCookie('token');
+    res.clearCookie(REFRESH_COOKIE_NAME);
     res.json({ message: 'Logged out successfully' });
 };
 

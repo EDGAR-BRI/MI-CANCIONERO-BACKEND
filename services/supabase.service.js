@@ -116,6 +116,18 @@ const getSupabaseUserFromToken = async (accessToken) => {
     return authClient.auth.getUser(accessToken);
 };
 
+const refreshSupabaseSession = async (refreshToken) => {
+    if (!authClient) {
+        return { data: null, error: { message: 'Supabase auth is not configured' } };
+    }
+
+    if (!refreshToken) {
+        return { data: null, error: { message: 'Refresh token is required' } };
+    }
+
+    return authClient.auth.refreshSession({ refresh_token: refreshToken });
+};
+
 module.exports = {
     hasSupabaseAuthConfig,
     hasValidServiceRoleKey,
@@ -125,5 +137,6 @@ module.exports = {
     resendSignupVerificationEmail,
     updatePasswordWithAccessToken,
     createUserWithSupabaseAdmin,
-    getSupabaseUserFromToken
+    getSupabaseUserFromToken,
+    refreshSupabaseSession
 };
