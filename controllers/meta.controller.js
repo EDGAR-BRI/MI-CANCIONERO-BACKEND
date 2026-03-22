@@ -30,8 +30,7 @@ let phonePrefixCache = {
 };
 
 const normalizePrefixes = (countries) => {
-    const seen = new Set();
-    const prefixes = [];
+    const bestByIso2 = new Map();
 
     for (const country of countries) {
         const iso2 = country?.cca2;
@@ -49,20 +48,20 @@ const normalizePrefixes = (countries) => {
                 continue;
             }
 
-            const key = `${iso2}-${code}`;
-            if (seen.has(key)) {
-                continue;
+            const current = bestByIso2.get(iso2);
+            // Keep a single prefix per country, preferring the shortest (usually the canonical one).
+            if (!current || code.length < current.code.length || (code.length === current.code.length && code < current.code)) {
+                bestByIso2.set(iso2, {
+                    iso2,
+                    country: countryName,
+                    code,
+                    label: `${iso2} ${code}`
+                });
             }
-
-            seen.add(key);
-            prefixes.push({
-                iso2,
-                country: countryName,
-                code,
-                label: `${iso2} ${code}`
-            });
         }
     }
+
+    const prefixes = Array.from(bestByIso2.values());
 
     prefixes.sort((a, b) => {
         if (a.country < b.country) return -1;
