@@ -18,11 +18,13 @@ const allowedOrigins = [
     ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : [])
 ];
 
+const isLocalhostOrigin = (origin) => /^https?:\/\/localhost:\d+$/.test(origin);
+
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
+        if (allowedOrigins.indexOf(origin) !== -1 || isLocalhostOrigin(origin)) {
             callback(null, true);
         } else {
             console.log("Blocked by CORS:", origin);

@@ -1,36 +1,84 @@
-const jwt = require('jsonwebtoken');
 const prisma = require('../prismaClient');
+const {
+    hasSupabaseAuthConfig,
+    getSupabaseUserFromToken
+} = require('../services/supabase.service');
 
-const SECRET_KEY = process.env.JWT_SECRET || 'your_super_secret_key_change_me';
+const getTokenFromRequest = (req) => {
+    return req.cookies?.token || req.headers['authorization']?.split(' ')[1];
+};
+
+const resolveLocalUserFromSupabaseToken = async (token) => {
+    if (!hasSupabaseAuthConfig) {
+        return null;
+    }
+
+    const { data, error } = await getSupabaseUserFromToken(token);
+
+    if (error || !data?.user?.email) {
+        return null;
+    }
+
+    const userWithPermissions = await prisma.user.findUnique({
+        where: { email: data.user.email },
+        include: {
+            role: {
+                include: {
+                    permissions: true
+                }
+            }
+        }
+    });
+
+    if (!userWithPermissions) {
+        return null;
+    }
+
+    const permissions = userWithPermissions.role.permissions.map(p => p.name);
+
+    return {
+        id: userWithPermissions.id,
+        email: userWithPermissions.email,
+        role: userWithPermissions.role.name,
+        permissions,
+        supabaseId: data.user.id
+    };
+};
 
 exports.authenticateToken = (req, res, next) => {
-    // Check for token in cookies or Authorization header
-    const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
+    const token = getTokenFromRequest(req);
 
     if (!token) {
         return res.status(401).json({ error: 'Authentication required' });
     }
 
-    try {
-        const user = jwt.verify(token, SECRET_KEY);
-        req.user = user;
-        next();
-    } catch (err) {
-        return res.status(403).json({ error: 'Invalid or expired token' });
-    }
+    resolveLocalUserFromSupabaseToken(token)
+        .then((user) => {
+            if (user) {
+                req.user = user;
+                return next();
+            }
+
+            return res.status(403).json({ error: 'Invalid or expired token' });
+        })
+        .catch((error) => {
+            console.error('Auth middleware error:', error);
+            return res.status(500).json({ error: 'Internal server error' });
+        });
 };
 
 exports.optionalAuth = (req, res, next) => {
-    const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
+    const token = getTokenFromRequest(req);
     if (!token) return next();
 
-    try {
-        const user = jwt.verify(token, SECRET_KEY);
-        req.user = user;
-    } catch (err) {
-        // Ignore invalid token for optional auth
-    }
-    next();
+    resolveLocalUserFromSupabaseToken(token)
+        .then((user) => {
+            if (user) {
+                req.user = user;
+            }
+            return next();
+        })
+        .catch(() => next());
 };
 
 exports.authorizeAdmin = (req, res, next) => {

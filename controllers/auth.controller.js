@@ -1,54 +1,103 @@
 const prisma = require('../prismaClient');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const { validatePhoneNumber } = require('../utils/validation');
+const {
+    hasSupabaseAuthConfig,
+    signInWithSupabase,
+    signUpWithSupabase,
+    sendPasswordRecoveryEmail,
+    updatePasswordWithAccessToken
+} = require('../services/supabase.service');
 
-const SECRET_KEY = process.env.JWT_SECRET || 'your_super_secret_key_change_me';
+const SUPABASE_PASSWORD_PLACEHOLDER = 'SUPABASE_MANAGED_PASSWORD';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4321';
+
+const getDefaultUserRole = async () => {
+    let role = await prisma.role.findUnique({ where: { name: 'USER' } });
+    if (!role) role = { id: 2, name: 'USER' };
+    return role;
+};
+
+const findUserWithAuthDataByEmail = async (email) => {
+    return prisma.user.findUnique({
+        where: { email },
+        include: {
+            role: {
+                include: {
+                    permissions: true
+                }
+            }
+        }
+    });
+};
 
 exports.login = async (req, res) => {
     const { email, password } = req.body;
 
+    if (!email || !password) {
+        return res.status(400).json({ error: 'Email y password son obligatorios' });
+    }
+
     try {
-        const user = await prisma.user.findUnique({
-            where: { email },
-            include: {
-                role: {
-                    include: {
-                        permissions: true
-                    }
+        if (!hasSupabaseAuthConfig) {
+            return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
+        }
 
-                }
+        const { data: signInData, error: signInError } = await signInWithSupabase(email, password);
 
-            },
-        });
+        if (signInError?.message && /email not confirmed/i.test(signInError.message)) {
+            return res.status(403).json({ error: 'Debes verificar tu correo antes de iniciar sesion' });
+        }
+
+        if (signInError || !signInData?.session?.access_token || !signInData?.user) {
+            return res.status(401).json({ error: 'Credenciales invalidas' });
+        }
+
+        let user = await findUserWithAuthDataByEmail(signInData.user.email);
 
         if (!user) {
-            return res.status(401).json({ error: 'Invalid credentials' });
+            const role = await getDefaultUserRole();
+            const fallbackHash = await bcrypt.hash(SUPABASE_PASSWORD_PLACEHOLDER, 10);
+
+            user = await prisma.user.create({
+                data: {
+                    name: signInData.user.user_metadata?.name || signInData.user.email,
+                    email: signInData.user.email,
+                    password: fallbackHash,
+                    roleId: role.id,
+                    phoneNumber: signInData.user.phone || null
+                },
+                include: {
+                    role: {
+                        include: {
+                            permissions: true
+                        }
+                    }
+                }
+            });
         }
 
-        const validPassword = await bcrypt.compare(password, user.password);
-        if (!validPassword) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-
+        const token = signInData.session.access_token;
         const permissions = user.role.permissions.map(p => p.name);
-
-        // Generate Token
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role.name, permissions },
-            SECRET_KEY,
-            { expiresIn: '24h' }
-        );
 
         // Set Cookie
         res.cookie('token', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
-            maxAge: 24 * 60 * 60 * 1000, // 24 hours
+            maxAge: (signInData.session.expires_in || 24 * 60 * 60) * 1000,
             sameSite: 'lax' // Allows cookie to be sent on same-site navigation
         });
 
-        res.json({ message: 'Login successful', token, user: { id: user.id, email: user.email, role: user.role.name, permissions } });
+        res.json({
+            message: 'Login successful',
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: user.role.name,
+                permissions
+            }
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -62,6 +111,10 @@ exports.register = async (req, res) => {
     }
 
     try {
+        if (!hasSupabaseAuthConfig) {
+            return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
+        }
+
         if (phoneNumber) {
             const validPhone = validatePhoneNumber(phoneNumber);
             if (!validPhone) {
@@ -73,29 +126,87 @@ exports.register = async (req, res) => {
             return res.status(409).json({ error: 'El usuario ya existe.' });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const { data: signUpData, error: signUpError } = await signUpWithSupabase({
+            email,
+            password,
+            metadata: {
+                name,
+                phoneNumber: phoneNumber || null
+            },
+            emailRedirectTo: `${FRONTEND_URL}/login?verified=1`
+        });
 
-        // find USER role
-        let role = await prisma.role.findUnique({ where: { name: 'USER' } });
-        // Fail-safe if role not found by name (e.g. casing), try ID 2
-        if (!role) role = { id: 2 };
+        if (signUpError) {
+            const status = /already registered|already exists/i.test(signUpError.message) ? 409 : 400;
+            return res.status(status).json({ error: signUpError.message || 'No se pudo registrar en Supabase Auth' });
+        }
+
+        const supabaseEmail = signUpData?.user?.email || signUpData?.user?.identities?.[0]?.identity_data?.email || email;
+
+        const hashedPassword = await bcrypt.hash(SUPABASE_PASSWORD_PLACEHOLDER, 10);
+
+        const role = await getDefaultUserRole();
 
         const user = await prisma.user.create({
             data: {
                 name,
-                email,
-                password: hashedPassword,
+                email: supabaseEmail,
                 password: hashedPassword,
                 roleId: role.id,
                 phoneNumber: phoneNumber ? validatePhoneNumber(phoneNumber) : null
             }
         });
 
-        res.status(201).json({ message: 'Usuario registrado correctamente', user: { id: user.id, email: user.email, name: user.name } });
+        res.status(201).json({
+            message: 'Usuario registrado correctamente. Revisa tu correo para verificar la cuenta.',
+            user: { id: user.id, email: user.email, name: user.name }
+        });
     } catch (error) {
         console.error("Register Error:", error);
         res.status(500).json({ error: error.message });
     }
+};
+
+exports.forgotPassword = async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email es obligatorio' });
+    }
+
+    if (!hasSupabaseAuthConfig) {
+        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
+    }
+
+    const redirectTo = `${FRONTEND_URL}/reset-password`;
+    await sendPasswordRecoveryEmail({ email, redirectTo });
+
+    return res.json({
+        message: 'Si el correo existe, enviamos instrucciones para recuperar la contrasena.'
+    });
+};
+
+exports.resetPassword = async (req, res) => {
+    const { accessToken, newPassword } = req.body;
+
+    if (!accessToken || !newPassword || String(newPassword).length < 6) {
+        return res.status(400).json({ error: 'Token y nueva contrasena (min 6) son obligatorios' });
+    }
+
+    if (!hasSupabaseAuthConfig) {
+        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
+    }
+
+    const { error } = await updatePasswordWithAccessToken({
+        accessToken,
+        newPassword
+    });
+
+    if (error) {
+        return res.status(400).json({ error: error.message || 'No se pudo actualizar la contrasena' });
+    }
+
+    return res.json({ message: 'Contrasena actualizada correctamente' });
 };
 
 exports.logout = (req, res) => {

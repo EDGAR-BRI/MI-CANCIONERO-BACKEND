@@ -1,16 +1,7 @@
 const prisma = require('../prismaClient');
-const jwt = require('jsonwebtoken');
-const SECRET_KEY = process.env.JWT_SECRET || 'your_super_secret_key_change_me';
 
 const getUserId = (req) => {
-    const token = req.cookies?.token || req.headers['authorization']?.split(' ')[1];
-    if (!token) return null;
-    try {
-        const user = jwt.verify(token, SECRET_KEY);
-        return user.id;
-    } catch (err) {
-        return null;
-    }
+    return req.user?.id || null;
 };
 
 exports.getAllMisas = async (req, res) => {
@@ -39,7 +30,11 @@ exports.getAllMisas = async (req, res) => {
             },
             orderBy: { dateMisa: 'desc' }
         });
-        res.json(misas);
+        const misasWithOwnership = misas.map((misa) => ({
+            ...misa,
+            isOwner: Boolean(userId && misa.userId === userId)
+        }));
+        res.json(misasWithOwnership);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

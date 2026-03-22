@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const misaController = require('../controllers/misa.controller');
-const { authenticateToken } = require('../middleware/auth.middleware');
+const { authenticateToken, optionalAuth } = require('../middleware/auth.middleware');
 
 // Misa CRUD
-router.get('/', misaController.getAllMisas);
-router.get('/:id', misaController.getMisaById);
+router.get('/', optionalAuth, misaController.getAllMisas);
+router.get('/:id', optionalAuth, misaController.getMisaById);
 router.post('/', authenticateToken, misaController.createMisa);
 router.put('/:id', authenticateToken, misaController.updateMisa);
 router.delete('/:id', authenticateToken, misaController.deleteMisa);
