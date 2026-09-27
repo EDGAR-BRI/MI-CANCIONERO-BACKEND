@@ -11,7 +11,7 @@ if (process.env.VERCEL) {
         execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit' });
         console.log('✅ Base de datos de producción sincronizada exitosamente.');
     } catch (error) {
-        console.error('❌ Error al sincronizar la base de datos en Vercel:', error.message);
-        throw error;
+        console.warn('⚠️ No se pudo ejecutar prisma db push durante el build de Vercel (típico por IPv6 de Supabase en AWS Lambda):', error.message);
+        console.warn('ℹ️ El build continuará normalmente.');
     }
 }
