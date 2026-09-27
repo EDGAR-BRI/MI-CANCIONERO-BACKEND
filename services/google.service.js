@@ -4,7 +4,10 @@ const axios = require('axios');
 const getClientId = () => process.env.GOOGLE_CLIENT_ID || process.env.id;
 const getClientSecret = () => process.env.GOOGLE_CLIENT_SECRET || process.env.secreto;
 const getDefaultRedirectUri = (customUri) => {
-    if (customUri) return customUri;
+    // Si viene https://localhost (sin puerto), es un artefacto interno del runtime serverless de Vercel
+    if (customUri && !customUri.startsWith('https://localhost')) {
+        return customUri;
+    }
     return process.env.GOOGLE_REDIRECT_URI || `${process.env.FRONTEND_URL || 'http://localhost:4321'}/auth/callback`;
 };
 
