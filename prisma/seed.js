@@ -43,27 +43,44 @@ async function main() {
         },
     });
 
-    // User Role: Can create Misas by default. 
-    // Maybe also create songs? The user implied restrictions. 
-    // Let's give them misa.create and song.create/edit by default, but NOT song.delete.
-    const userPermissions = ['misa.create', 'song.create', 'song.edit'];
+    // User Role (Usuario normal)
     const userRole = await prisma.role.upsert({
         where: { id: 2 },
         update: {
+            name: 'USER',
             permissions: {
                 set: [],
-                connect: userPermissions.map(p => ({ name: p }))
+                connect: [{ name: 'misa.create' }]
             }
         },
         create: {
             name: 'USER',
             permissions: {
-                connect: userPermissions.map(p => ({ name: p }))
+                connect: [{ name: 'misa.create' }]
             }
         },
     });
 
-    console.log('Roles created.');
+    // Musico Role (Músico: puede crear y editar canciones y crear misas)
+    const musicoPermissions = ['song.create', 'song.edit', 'misa.create'];
+    const musicoRole = await prisma.role.upsert({
+        where: { id: 3 },
+        update: {
+            name: 'MUSICO',
+            permissions: {
+                set: [],
+                connect: musicoPermissions.map(p => ({ name: p }))
+            }
+        },
+        create: {
+            name: 'MUSICO',
+            permissions: {
+                connect: musicoPermissions.map(p => ({ name: p }))
+            }
+        },
+    });
+
+    console.log('Roles created (ADMIN, USER, MUSICO).');
 
     // Categories
     const catAdoracion = await prisma.category.create({

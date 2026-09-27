@@ -23,6 +23,7 @@ const permissionsRoutes = require('./permissions.routes');
 
 // ... existing mounts ...
 router.use('/permissions', permissionsRoutes);
+router.use('/ministries', require('./ministries.routes'));
 
 module.exports = router;
 

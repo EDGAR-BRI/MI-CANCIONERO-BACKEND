@@ -2,7 +2,24 @@ const { redisClient } = require('./redis');
 
 const isUpstash = !!process.env.UPSTASH_REDIS_REST_URL;
 
+// Local in-memory fallback cache for development when Redis server is not running
+const memoryCache = new Map();
+
+const isRedisAvailable = () => {
+    return isUpstash || Boolean(redisClient?.isReady);
+};
+
 const get = async (key) => {
+    if (!isRedisAvailable()) {
+        const item = memoryCache.get(key);
+        if (!item) return null;
+        if (item.expiresAt && Date.now() > item.expiresAt) {
+            memoryCache.delete(key);
+            return null;
+        }
+        return item.value;
+    }
+
     try {
         const data = await redisClient.get(key);
         if (!data) return null;
@@ -15,6 +32,14 @@ const get = async (key) => {
 };
 
 const set = async (key, value, ttlSeconds) => {
+    if (!isRedisAvailable()) {
+        memoryCache.set(key, {
+            value,
+            expiresAt: ttlSeconds ? Date.now() + ttlSeconds * 1000 : null
+        });
+        return;
+    }
+
     try {
         const serialized = JSON.stringify(value);
         if (isUpstash) {
@@ -32,6 +57,10 @@ const set = async (key, value, ttlSeconds) => {
 };
 
 const del = async (key) => {
+    memoryCache.delete(key);
+
+    if (!isRedisAvailable()) return;
+
     try {
         await redisClient.del(key);
     } catch (error) {
@@ -40,6 +69,16 @@ const del = async (key) => {
 };
 
 const delPattern = async (pattern) => {
+    // Invalidate matching in-memory cache keys
+    const regexPattern = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    for (const key of memoryCache.keys()) {
+        if (regexPattern.test(key)) {
+            memoryCache.delete(key);
+        }
+    }
+
+    if (!isRedisAvailable()) return;
+
     try {
         const keys = await redisClient.keys(pattern);
         if (keys.length > 0) {
@@ -57,3 +96,4 @@ const delPattern = async (pattern) => {
 };
 
 module.exports = { get, set, del, delPattern };
+

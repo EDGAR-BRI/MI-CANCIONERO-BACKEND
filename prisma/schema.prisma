@@ -25,15 +25,18 @@ model Song {
 }
 
 model User {
-  id          Int     @id @default(autoincrement())
-  name        String
-  email       String  @unique
-  password    String
-  role        Role    @relation(fields: [roleId], references: [id])
-  roleId      Int
-  phoneNumber String?
-  misas       Misa[]
-  songs       Song[]
+  id              Int              @id @default(autoincrement())
+  name            String
+  email           String           @unique
+  password        String
+  googleId        String?          @unique
+  avatarUrl       String?
+  role            Role             @relation(fields: [roleId], references: [id])
+  roleId          Int
+  phoneNumber     String?
+  misas           Misa[]
+  songs           Song[]
+  ministryMembers MinistryMember[]
 
   @@map("users")
 }
@@ -75,6 +78,8 @@ model Misa {
   editToken  String?    @default(uuid())
   userId     Int?
   user       User?      @relation(fields: [userId], references: [id])
+  ministryId Int?
+  ministry   Ministry?  @relation(fields: [ministryId], references: [id])
 
   @@map("misa")
 }
@@ -98,4 +103,46 @@ model MisaSong {
   key      String? @db.VarChar(10)
 
   @@map("missa_song")
+}
+
+model Ministry {
+  id                 Int              @id @default(autoincrement())
+  name               String
+  description        String?
+  avatarUrl          String?
+  inviteCode         String           @unique @default(uuid())
+  requireApproval    Boolean          @default(false)
+  allowMemberInvites Boolean          @default(false)
+  foundedAt          DateTime         @default(now())
+  active             Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  members            MinistryMember[]
+  misas              Misa[]
+
+  @@map("ministries")
+}
+
+model MinistryMember {
+  id         Int              @id @default(autoincrement())
+  ministry   Ministry         @relation(fields: [ministryId], references: [id], onDelete: Cascade)
+  ministryId Int
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     Int
+  role       MinistryRole     @default(MEMBER)
+  status     MembershipStatus @default(ACTIVE)
+  joinedAt   DateTime         @default(now())
+
+  @@unique([ministryId, userId])
+  @@map("ministry_members")
+}
+
+enum MinistryRole {
+  ADMIN
+  MEMBER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  PENDING
 }
