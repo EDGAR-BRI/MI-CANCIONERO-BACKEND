@@ -128,7 +128,7 @@ exports.createMinistry = async (req, res) => {
                     where: { userId },
                     include: {
                         user: {
-                            select: { id: true, name: true, email: true }
+                            select: { id: true, name: true, email: true, phoneNumber: true, avatarUrl: true }
                         }
                     }
                 }
@@ -159,7 +159,7 @@ exports.getMinistryById = async (req, res) => {
                 members: {
                     include: {
                         user: {
-                            select: { id: true, name: true, email: true, phoneNumber: true }
+                            select: { id: true, name: true, email: true, phoneNumber: true, avatarUrl: true }
                         }
                     },
                     orderBy: [
@@ -202,6 +202,7 @@ exports.getMinistryById = async (req, res) => {
                 userId: m.user.id,
                 name: m.user.name,
                 email: m.user.email,
+                avatarUrl: m.user.avatarUrl,
                 phoneNumber: m.user.phoneNumber,
                 role: m.role,
                 joinedAt: m.joinedAt
@@ -215,6 +216,7 @@ exports.getMinistryById = async (req, res) => {
                     userId: m.user.id,
                     name: m.user.name,
                     email: m.user.email,
+                    avatarUrl: m.user.avatarUrl,
                     phoneNumber: m.user.phoneNumber,
                     requestedAt: m.joinedAt
                 }))
@@ -379,7 +381,8 @@ exports.searchUsers = async (req, res) => {
                 id: true,
                 name: true,
                 email: true,
-                phoneNumber: true
+                phoneNumber: true,
+                avatarUrl: true
             },
             take: 10
         });
@@ -444,7 +447,7 @@ exports.addMemberDirectly = async (req, res) => {
                 where: { id: existing.id },
                 data: { status: 'ACTIVE' },
                 include: {
-                    user: { select: { id: true, name: true, email: true, phoneNumber: true } }
+                    user: { select: { id: true, name: true, email: true, phoneNumber: true, avatarUrl: true } }
                 }
             });
             return res.json({
@@ -454,6 +457,7 @@ exports.addMemberDirectly = async (req, res) => {
                     userId: updated.user.id,
                     name: updated.user.name,
                     email: updated.user.email,
+                    avatarUrl: updated.user.avatarUrl,
                     phoneNumber: updated.user.phoneNumber,
                     role: updated.role,
                     joinedAt: updated.joinedAt
@@ -469,7 +473,7 @@ exports.addMemberDirectly = async (req, res) => {
                 status: 'ACTIVE'
             },
             include: {
-                user: { select: { id: true, name: true, email: true, phoneNumber: true } }
+                user: { select: { id: true, name: true, email: true, phoneNumber: true, avatarUrl: true } }
             }
         });
 
@@ -480,6 +484,7 @@ exports.addMemberDirectly = async (req, res) => {
                 userId: newMember.user.id,
                 name: newMember.user.name,
                 email: newMember.user.email,
+                avatarUrl: newMember.user.avatarUrl,
                 phoneNumber: newMember.user.phoneNumber,
                 role: newMember.role,
                 joinedAt: newMember.joinedAt
