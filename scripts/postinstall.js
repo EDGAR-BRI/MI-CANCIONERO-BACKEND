@@ -8,7 +8,7 @@ execSync('npx prisma generate', { stdio: 'inherit' });
 if (process.env.VERCEL) {
     console.log('🚀 Entorno Vercel detectado. Sincronizando esquema con la base de datos PostgreSQL (prisma db push)...');
     try {
-        execSync('npx prisma db push --skip-generate', { stdio: 'inherit' });
+        execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit' });
         console.log('✅ Base de datos de producción sincronizada exitosamente.');
     } catch (error) {
         console.error('❌ Error al sincronizar la base de datos en Vercel:', error.message);
