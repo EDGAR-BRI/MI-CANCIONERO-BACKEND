@@ -1,291 +1,392 @@
 const prisma = require('../prismaClient');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { validatePhoneNumber } = require('../utils/validation');
-const {
-    hasSupabaseAuthConfig,
-    signInWithSupabase,
-    signUpWithSupabase,
-    sendPasswordRecoveryEmail,
-    resendSignupVerificationEmail,
-    updatePasswordWithAccessToken
-} = require('../services/supabase.service');
+const jwtService = require('../services/jwt.service');
+const googleService = require('../services/google.service');
 
-const SUPABASE_PASSWORD_PLACEHOLDER = 'SUPABASE_MANAGED_PASSWORD';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4321';
 const REFRESH_COOKIE_NAME = 'refresh_token';
 const REFRESH_COOKIE_MAX_AGE_MS = (Number(process.env.REFRESH_TOKEN_COOKIE_DAYS) || 30) * 24 * 60 * 60 * 1000;
-
-const logInternalError = (scope, error) => {
-    console.error(`[${scope}]`, error);
-};
-
-const isPrismaUniqueConstraintError = (error) => {
-    return error && error.code === 'P2002';
-};
+const ACCESS_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const getDefaultUserRole = async () => {
-    let role = await prisma.role.findUnique({ where: { name: 'USER' } });
-    if (!role) role = { id: 2, name: 'USER' };
+    let role = await prisma.role.findFirst({ where: { name: 'USER' } });
+    if (!role) {
+        role = await prisma.role.findFirst();
+    }
+    if (!role) {
+        role = await prisma.role.create({
+            data: { name: 'USER' }
+        });
+    }
     return role;
 };
 
-const findUserWithAuthDataByEmail = async (email) => {
-    return prisma.user.findUnique({
-        where: { email },
-        include: {
-            role: {
-                include: {
-                    permissions: true
-                }
-            }
-        }
+const setAuthCookies = (res, { token, refreshToken, rememberMe = true }) => {
+    const baseCookieOptions = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/'
+    };
+
+    res.cookie('token', token, {
+        ...baseCookieOptions,
+        maxAge: ACCESS_COOKIE_MAX_AGE_MS
     });
+
+    if (refreshToken) {
+        res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+            ...baseCookieOptions,
+            ...(rememberMe ? { maxAge: REFRESH_COOKIE_MAX_AGE_MS } : {})
+        });
+    }
 };
 
+// 1. Register with email and password
+exports.register = async (req, res) => {
+    const { name, email, password, phoneNumber } = req.body;
+
+    if (!name || !email || !password) {
+        return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios.' });
+    }
+
+    if (String(password).length < 6) {
+        return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres.' });
+    }
+
+    try {
+        const normalizedEmail = email.trim().toLowerCase();
+
+        // Check if user already exists
+        const existingUser = await prisma.user.findUnique({
+            where: { email: normalizedEmail }
+        });
+
+        if (existingUser) {
+            if (existingUser.googleId) {
+                return res.status(409).json({
+                    error: 'Este correo ya está registrado con Google. Por favor, inicia sesión con el botón Continuar con Google.'
+                });
+            }
+            return res.status(409).json({ error: 'El correo electrónico ya está registrado.' });
+        }
+
+        let validPhone = null;
+        if (phoneNumber) {
+            validPhone = validatePhoneNumber(phoneNumber);
+            if (!validPhone) {
+                return res.status(400).json({ error: 'Número de teléfono inválido.' });
+            }
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const role = await getDefaultUserRole();
+
+        const user = await prisma.user.create({
+            data: {
+                name: name.trim(),
+                email: normalizedEmail,
+                password: hashedPassword,
+                roleId: role.id,
+                phoneNumber: validPhone
+            },
+            include: {
+                role: {
+                    include: {
+                        permissions: true
+                    }
+                }
+            }
+        });
+
+        const { token, refreshToken } = jwtService.generateTokens(user);
+        setAuthCookies(res, { token, refreshToken });
+
+        res.status(201).json({
+            message: 'Cuenta creada exitosamente.',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl || null,
+                role: user.role.name,
+                permissions: user.role.permissions.map(p => p.name)
+            }
+        });
+    } catch (error) {
+        console.error('Error in auth.register:', error);
+        res.status(500).json({ error: 'Error al registrar usuario. Intenta nuevamente.' });
+    }
+};
+
+// 2. Login with email and password
 exports.login = async (req, res) => {
     const { email, password, rememberMe = true } = req.body;
 
     if (!email || !password) {
-        return res.status(400).json({ error: 'Email y password son obligatorios' });
+        return res.status(400).json({ error: 'Correo y contraseña son obligatorios.' });
     }
 
     try {
-        if (!hasSupabaseAuthConfig) {
-            return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
-        }
+        const normalizedEmail = email.trim().toLowerCase();
 
-        const { data: signInData, error: signInError } = await signInWithSupabase(email, password);
-
-        if (signInError?.message && /email not confirmed/i.test(signInError.message)) {
-            return res.status(403).json({ error: 'Debes verificar tu correo antes de iniciar sesion' });
-        }
-
-        if (signInError || !signInData?.session?.access_token || !signInData?.user) {
-            return res.status(401).json({ error: 'Credenciales invalidas' });
-        }
-
-        let user = await findUserWithAuthDataByEmail(signInData.user.email);
+        const user = await prisma.user.findUnique({
+            where: { email: normalizedEmail },
+            include: {
+                role: {
+                    include: {
+                        permissions: true
+                    }
+                }
+            }
+        });
 
         if (!user) {
-            const role = await getDefaultUserRole();
-            const fallbackHash = await bcrypt.hash(SUPABASE_PASSWORD_PLACEHOLDER, 10);
+            return res.status(401).json({ error: 'Credenciales inválidas. Verifica tu correo y contraseña.' });
+        }
+
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if (!isPasswordValid) {
+            if (user.googleId) {
+                return res.status(401).json({
+                    error: 'Contraseña incorrecta. Tu cuenta está vinculada a Google, puedes iniciar sesión con Google.'
+                });
+            }
+            return res.status(401).json({ error: 'Credenciales inválidas. Verifica tu correo y contraseña.' });
+        }
+
+        const { token, refreshToken } = jwtService.generateTokens(user);
+        setAuthCookies(res, { token, refreshToken, rememberMe });
+
+        res.json({
+            message: 'Inicio de sesión exitoso.',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl || null,
+                role: user.role.name,
+                permissions: user.role.permissions.map(p => p.name)
+            }
+        });
+    } catch (error) {
+        console.error('Error in auth.login:', error);
+        res.status(500).json({ error: 'Error al iniciar sesión. Intenta nuevamente.' });
+    }
+};
+
+// 3. Initiate Google OAuth flow
+exports.googleLogin = async (req, res) => {
+    try {
+        const redirectUri = req.query.redirect_uri || req.query.redirectUri;
+        const url = googleService.getGoogleAuthUrl(redirectUri);
+
+        if (req.query.json === 'true' || req.headers.accept?.includes('application/json')) {
+            return res.json({ url });
+        }
+
+        return res.redirect(url);
+    } catch (error) {
+        console.error('Error in auth.googleLogin:', error);
+        return res.status(500).json({ error: error.message || 'Error al iniciar sesión con Google.' });
+    }
+};
+
+// 4. Handle Google OAuth callback & Account Linking
+exports.googleCallback = async (req, res) => {
+    const { code, accessToken, redirectUri } = req.body;
+
+    if (!code && !accessToken) {
+        return res.status(400).json({ error: 'Código de autorización o token de acceso requerido.' });
+    }
+
+    try {
+        let googleAccessToken = accessToken;
+
+        if (code) {
+            // Exchange code with Google
+            const tokenData = await googleService.exchangeGoogleCode(code, redirectUri);
+            if (!tokenData?.access_token) {
+                return res.status(401).json({ error: 'No se pudo obtener el token de acceso de Google.' });
+            }
+            googleAccessToken = tokenData.access_token;
+        }
+
+        // Fetch user profile from Google
+        const googleUser = await googleService.getGoogleUserInfo(googleAccessToken);
+        if (!googleUser?.email) {
+            return res.status(400).json({ error: 'No se pudo obtener el correo de la cuenta de Google.' });
+        }
+
+        const normalizedEmail = googleUser.email.trim().toLowerCase();
+
+        // Account Linking: Check if user already exists by email OR googleId
+        let user = await prisma.user.findFirst({
+            where: {
+                OR: [
+                    { email: normalizedEmail },
+                    { googleId: googleUser.sub }
+                ]
+            },
+            include: {
+                role: {
+                    include: { permissions: true }
+                }
+            }
+        });
+
+        if (user) {
+            // Link Google account and update avatar/name if applicable
+            const updateData = {};
+            if (!user.googleId) {
+                updateData.googleId = googleUser.sub;
+            }
+            // Update avatar from Google only if user has no avatar or already uses Google photo
+            if (googleUser.picture && (!user.avatarUrl || user.avatarUrl.includes('googleusercontent.com'))) {
+                updateData.avatarUrl = googleUser.picture;
+            }
+            if ((!user.name || user.name.trim() === '') && googleUser.name) {
+                updateData.name = googleUser.name;
+            }
+
+            if (Object.keys(updateData).length > 0) {
+                user = await prisma.user.update({
+                    where: { id: user.id },
+                    data: updateData,
+                    include: {
+                        role: {
+                            include: { permissions: true }
+                        }
+                    }
+                });
+            }
+        } else {
+            // Create new user linked to Google
+            const defaultRole = await getDefaultUserRole();
+            const randomPassword = crypto.randomUUID();
+            const hashedPassword = await bcrypt.hash(randomPassword, 10);
 
             user = await prisma.user.create({
                 data: {
-                    name: signInData.user.user_metadata?.name || signInData.user.email,
-                    email: signInData.user.email,
-                    password: fallbackHash,
-                    roleId: role.id,
-                    phoneNumber: signInData.user.phone || null
+                    name: googleUser.name || normalizedEmail.split('@')[0],
+                    email: normalizedEmail,
+                    password: hashedPassword,
+                    googleId: googleUser.sub,
+                    avatarUrl: googleUser.picture || null,
+                    roleId: defaultRole.id
                 },
                 include: {
                     role: {
-                        include: {
-                            permissions: true
-                        }
+                        include: { permissions: true }
                     }
                 }
             });
         }
 
-        const token = signInData.session.access_token;
-        const refreshToken = signInData.session.refresh_token;
-        const permissions = user.role.permissions.map(p => p.name);
-        const accessTokenMaxAgeMs = (signInData.session.expires_in || 24 * 60 * 60) * 1000;
+        // Generate native JWT tokens
+        const { token, refreshToken } = jwtService.generateTokens(user);
+        setAuthCookies(res, { token, refreshToken, rememberMe: true });
 
-        const baseCookieOptions = {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax'
-        };
-
-        // Access token cookie
-        res.cookie('token', token, {
-            ...baseCookieOptions,
-            ...(rememberMe ? { maxAge: accessTokenMaxAgeMs } : {})
-        });
-
-        // Refresh token cookie for transparent renewals
-        if (refreshToken) {
-            res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
-                ...baseCookieOptions,
-                ...(rememberMe ? { maxAge: REFRESH_COOKIE_MAX_AGE_MS } : {})
-            });
-        }
-
-        res.json({
-            message: 'Login successful',
+        return res.json({
+            message: 'Inicio de sesión con Google exitoso.',
             token,
             refreshToken,
-            expiresIn: signInData.session.expires_in,
             user: {
                 id: user.id,
+                name: user.name,
                 email: user.email,
-                role: user.role.name,
-                permissions
+                avatarUrl: user.avatarUrl || null,
+                role: user.role?.name || 'USER',
+                permissions: user.role?.permissions?.map(p => p.name) || []
             }
         });
     } catch (error) {
-        logInternalError('auth.login', error);
-        res.status(500).json({ error: 'No se pudo iniciar sesion. Intenta nuevamente.' });
+        console.error('Error in auth.googleCallback:', error.response?.data || error);
+        const errDetail = error.response?.data?.error_description || error.response?.data?.error || error.message;
+        return res.status(500).json({ error: `Error al procesar la autenticación con Google: ${errDetail}` });
     }
 };
 
-exports.register = async (req, res) => {
-    const { name, email, password, phoneNumber } = req.body;
-
-    if (!name || !email || !password) {
-        return res.status(400).json({ error: 'Name, email and password are required' });
-    }
-
-    try {
-        if (!hasSupabaseAuthConfig) {
-            return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
-        }
-
-        if (phoneNumber) {
-            const validPhone = validatePhoneNumber(phoneNumber);
-            if (!validPhone) {
-                return res.status(400).json({ error: 'Invalid phone number' });
-            }
-        }
-        const existingUser = await prisma.user.findUnique({ where: { email } });
-        if (existingUser) {
-            return res.status(409).json({ error: 'El usuario ya existe.' });
-        }
-
-        const { data: signUpData, error: signUpError } = await signUpWithSupabase({
-            email,
-            password,
-            metadata: {
-                name,
-                phoneNumber: phoneNumber || null
-            },
-            emailRedirectTo: `${FRONTEND_URL}/login?verified=1`
-        });
-
-        if (signUpError) {
-            const alreadyExists = /already registered|already exists|user already exists/i.test(signUpError.message || '');
-            if (alreadyExists) {
-                return res.status(409).json({ error: 'El correo ya esta registrado.' });
-            }
-            return res.status(400).json({ error: 'No se pudo completar el registro. Verifica tus datos.' });
-        }
-
-        const supabaseEmail = signUpData?.user?.email || signUpData?.user?.identities?.[0]?.identity_data?.email || email;
-
-        const hashedPassword = await bcrypt.hash(SUPABASE_PASSWORD_PLACEHOLDER, 10);
-
-        const role = await getDefaultUserRole();
-
-        const user = await prisma.user.create({
-            data: {
-                name,
-                email: supabaseEmail,
-                password: hashedPassword,
-                roleId: role.id,
-                phoneNumber: phoneNumber ? validatePhoneNumber(phoneNumber) : null
-            }
-        });
-
-        res.status(201).json({
-            message: 'Cuenta creada. Te enviamos un correo para confirmar tu email antes de iniciar sesion.',
-            user: { id: user.id, email: user.email, name: user.name }
-        });
-    } catch (error) {
-        logInternalError('auth.register', error);
-
-        if (isPrismaUniqueConstraintError(error)) {
-            return res.status(409).json({ error: 'El correo ya esta registrado.' });
-        }
-
-        return res.status(500).json({ error: 'No se pudo crear la cuenta. Intenta nuevamente.' });
-    }
-};
-
-exports.resendVerification = async (req, res) => {
-    const { email } = req.body;
-
-    if (!email) {
-        return res.status(400).json({ error: 'Email es obligatorio' });
-    }
-
-    if (!hasSupabaseAuthConfig) {
-        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
-    }
-
-    try {
-        const redirectTo = `${FRONTEND_URL}/login?verified=1`;
-        await resendSignupVerificationEmail({ email, redirectTo });
-
-        return res.json({
-            message: 'Si el correo existe, enviamos un nuevo enlace de verificacion.'
-        });
-    } catch (error) {
-        logInternalError('auth.resendVerification', error);
-        return res.status(500).json({ error: 'No se pudo procesar la solicitud. Intenta nuevamente.' });
-    }
-};
-
-exports.forgotPassword = async (req, res) => {
-    const { email } = req.body;
-
-    if (!email) {
-        return res.status(400).json({ error: 'Email es obligatorio' });
-    }
-
-    if (!hasSupabaseAuthConfig) {
-        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
-    }
-
-    try {
-        const redirectTo = `${FRONTEND_URL}/reset-password`;
-        await sendPasswordRecoveryEmail({ email, redirectTo });
-
-        return res.json({
-            message: 'Si el correo existe, enviamos instrucciones para recuperar la contrasena.'
-        });
-    } catch (error) {
-        logInternalError('auth.forgotPassword', error);
-        return res.status(500).json({ error: 'No se pudo procesar la solicitud. Intenta nuevamente.' });
-    }
-};
-
-exports.resetPassword = async (req, res) => {
-    const { accessToken, newPassword } = req.body;
-
-    if (!accessToken || !newPassword || String(newPassword).length < 6) {
-        return res.status(400).json({ error: 'Token y nueva contrasena (min 6) son obligatorios' });
-    }
-
-    if (!hasSupabaseAuthConfig) {
-        return res.status(500).json({ error: 'Supabase Auth no esta configurado en el backend' });
-    }
-
-    try {
-        const { error } = await updatePasswordWithAccessToken({
-            accessToken,
-            newPassword
-        });
-
-        if (error) {
-            return res.status(400).json({ error: 'El enlace no es valido o ya expiro. Solicita uno nuevo.' });
-        }
-
-        return res.json({ message: 'Contrasena actualizada correctamente' });
-    } catch (error) {
-        logInternalError('auth.resetPassword', error);
-        return res.status(500).json({ error: 'No se pudo actualizar la contrasena. Intenta nuevamente.' });
-    }
-};
-
+// 5. Logout
 exports.logout = (req, res) => {
-    res.clearCookie('token');
-    res.clearCookie(REFRESH_COOKIE_NAME);
-    res.json({ message: 'Logged out successfully' });
+    res.clearCookie('token', { path: '/' });
+    res.clearCookie(REFRESH_COOKIE_NAME, { path: '/' });
+    res.json({ message: 'Sesión cerrada exitosamente.' });
 };
 
+// 6. Current authenticated user
 exports.me = (req, res) => {
-    // If middleware passed, req.user is set
     res.json({ user: req.user });
 };
+
+// 7. Update current user's profile (name, avatarUrl, phoneNumber)
+exports.updateProfile = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { name, avatarUrl, phoneNumber } = req.body;
+
+        const updateData = {};
+        if (name !== undefined) {
+            if (!name || !name.trim()) {
+                return res.status(400).json({ error: 'El nombre no puede estar vacío.' });
+            }
+            updateData.name = name.trim();
+        }
+
+        if (avatarUrl !== undefined) {
+            updateData.avatarUrl = avatarUrl && avatarUrl.trim() ? avatarUrl.trim() : null;
+        }
+
+        if (phoneNumber !== undefined) {
+            if (phoneNumber && phoneNumber.trim()) {
+                const validPhone = validatePhoneNumber(phoneNumber.trim());
+                if (!validPhone) {
+                    return res.status(400).json({ error: 'Número de teléfono inválido.' });
+                }
+                updateData.phoneNumber = validPhone;
+            } else {
+                updateData.phoneNumber = null;
+            }
+        }
+
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({ error: 'No se enviaron campos para actualizar.' });
+        }
+
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: updateData,
+            include: {
+                role: {
+                    include: { permissions: true }
+                }
+            }
+        });
+
+        // Re-generate tokens with new profile data and update cookies
+        const { token, refreshToken } = jwtService.generateTokens(updatedUser);
+        setAuthCookies(res, { token, refreshToken, rememberMe: true });
+
+        return res.json({
+            message: 'Perfil actualizado exitosamente.',
+            token,
+            refreshToken,
+            user: {
+                id: updatedUser.id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                avatarUrl: updatedUser.avatarUrl || null,
+                phoneNumber: updatedUser.phoneNumber || null,
+                role: updatedUser.role?.name || 'USER',
+                permissions: updatedUser.role?.permissions?.map(p => p.name) || []
+            }
+        });
+    } catch (error) {
+        console.error('Error in auth.updateProfile:', error);
+        return res.status(500).json({ error: 'Error al actualizar el perfil.' });
+    }
+};
+

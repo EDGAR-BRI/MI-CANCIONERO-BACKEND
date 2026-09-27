@@ -5,11 +5,12 @@ const { authenticateToken } = require('../middleware/auth.middleware');
 
 router.post('/register', authController.register);
 router.post('/login', authController.login);
-router.post('/resend-verification', authController.resendVerification);
-router.post('/forgot-password', authController.forgotPassword);
-router.post('/reset-password', authController.resetPassword);
-router.post('/refresh', authenticateToken, authController.me);
 router.post('/logout', authController.logout);
 router.get('/me', authenticateToken, authController.me);
+router.put('/me', authenticateToken, authController.updateProfile);
+
+// Google OAuth
+router.get('/google', authController.googleLogin);
+router.post('/google/callback', authController.googleCallback);
 
 module.exports = router;

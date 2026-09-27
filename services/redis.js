@@ -18,8 +18,16 @@ if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) 
 } else {
     const { createClient } = require('redis');
     redisClient = createClient({
-        url: `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
+        url: `redis://${process.env.REDIS_HOST || '127.0.0.1'}:${process.env.REDIS_PORT || 6379}`,
         password: process.env.REDIS_PASSWORD || undefined,
+        socket: {
+            reconnectStrategy: (retries) => {
+                if (retries > 2) {
+                    return false; // Stop reconnecting after 3 attempts
+                }
+                return 1000;
+            }
+        }
     });
     connectRedis = async () => {
         try {

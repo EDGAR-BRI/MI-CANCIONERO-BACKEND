@@ -128,6 +128,31 @@ const refreshSupabaseSession = async (refreshToken) => {
     return authClient.auth.refreshSession({ refresh_token: refreshToken });
 };
 
+const getGoogleOAuthUrl = async ({ redirectTo }) => {
+    if (!authClient) {
+        return { data: null, error: { message: 'Supabase auth is not configured' } };
+    }
+
+    return authClient.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+            redirectTo,
+            queryParams: {
+                access_type: 'offline',
+                prompt: 'consent'
+            }
+        }
+    });
+};
+
+const exchangeCodeForSession = async (code) => {
+    if (!authClient) {
+        return { data: null, error: { message: 'Supabase auth is not configured' } };
+    }
+
+    return authClient.auth.exchangeCodeForSession(code);
+};
+
 module.exports = {
     hasSupabaseAuthConfig,
     hasValidServiceRoleKey,
@@ -138,5 +163,7 @@ module.exports = {
     updatePasswordWithAccessToken,
     createUserWithSupabaseAdmin,
     getSupabaseUserFromToken,
-    refreshSupabaseSession
+    refreshSupabaseSession,
+    getGoogleOAuthUrl,
+    exchangeCodeForSession
 };
