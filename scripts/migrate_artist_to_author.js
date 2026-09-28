@@ -1,88 +1,76 @@
 const prisma = require('../prismaClient');
 
 async function migrateArtistsToAuthors() {
-    console.log('--- Migrando Artistas (String) a Autores (Tabla Author) ---');
+    console.log('--- Migrando Artistas a Autores (Tabla Author) ---');
     try {
         // 1. Asegurar autor por defecto 'Desconocido'
-        let defaultAuthor = await prisma.author.findUnique({
+        await prisma.$executeRawUnsafe(`
+            INSERT INTO authors (name, "createdAt", "updatedAt")
+            VALUES ('Desconocido', NOW(), NOW())
+            ON CONFLICT (name) DO NOTHING;
+        `);
+
+        const defaultAuthor = await prisma.author.findUnique({
             where: { name: 'Desconocido' }
         });
+        const defaultAuthorId = defaultAuthor ? defaultAuthor.id : 1;
+        console.log(`ℹ️ Autor por defecto "Desconocido" ID: ${defaultAuthorId}`);
 
-        if (!defaultAuthor) {
-            defaultAuthor = await prisma.author.create({
-                data: { name: 'Desconocido' }
-            });
-            console.log('✅ Autor por defecto "Desconocido" creado.');
+        // 2. Verificar si la columna "artist" existe físicamente en la tabla songs
+        const columns = await prisma.$queryRawUnsafe(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'songs' AND column_name = 'artist';
+        `);
+
+        if (Array.isArray(columns) && columns.length > 0) {
+            console.log('🔍 Columna "artist" encontrada en la tabla "songs". Extrayendo autores existentes...');
+
+            // Crear autores únicos desde la columna artist
+            await prisma.$executeRawUnsafe(`
+                INSERT INTO authors (name, "createdAt", "updatedAt")
+                SELECT DISTINCT TRIM(artist), NOW(), NOW()
+                FROM songs
+                WHERE artist IS NOT NULL AND TRIM(artist) <> ''
+                ON CONFLICT (name) DO NOTHING;
+            `);
+
+            // Asignar authorId según artist
+            const updatedFromArtist = await prisma.$executeRawUnsafe(`
+                UPDATE songs s
+                SET "authorId" = a.id
+                FROM authors a
+                WHERE s."authorId" IS NULL 
+                  AND TRIM(s.artist) = a.name;
+            `);
+            console.log(`✅ Canciones vinculadas desde columna artist: ${updatedFromArtist}`);
         } else {
-            console.log('ℹ️ Autor por defecto "Desconocido" ya existe (ID:', defaultAuthor.id, ').');
+            console.log('ℹ️ Columna "artist" no presente o ya migrada.');
         }
 
-        // 2. Obtener todas las canciones
-        const songs = await prisma.song.findMany({
-            select: {
-                id: true,
-                title: true,
-                artist: true,
-                authorId: true
-            }
-        });
-
-        console.log(`Encontradas ${songs.length} canciones para procesar.`);
-
-        let migratedCount = 0;
-        const authorCache = new Map();
-        authorCache.set('desconocido', defaultAuthor);
-
-        for (const song of songs) {
-            const rawArtist = (song.artist || '').trim();
-            const authorName = rawArtist.length > 0 ? rawArtist : 'Desconocido';
-            const cacheKey = authorName.toLowerCase();
-
-            let targetAuthor = authorCache.get(cacheKey);
-
-            if (!targetAuthor) {
-                // Buscar en DB o crear
-                targetAuthor = await prisma.author.findFirst({
-                    where: {
-                        name: {
-                            equals: authorName,
-                            mode: 'insensitive'
-                        }
-                    }
-                });
-
-                if (!targetAuthor) {
-                    targetAuthor = await prisma.author.create({
-                        data: { name: authorName }
-                    });
-                    console.log(`➕ Nuevo Autor creado: "${targetAuthor.name}" (ID: ${targetAuthor.id})`);
-                }
-
-                authorCache.set(cacheKey, targetAuthor);
-            }
-
-            // Asignar authorId a la canción
-            await prisma.song.update({
-                where: { id: song.id },
-                data: {
-                    authorId: targetAuthor.id
-                }
-            });
-
-            console.log(`🎵 Canción "${song.title}" (ID: ${song.id}) asignada al autor "${targetAuthor.name}" (ID: ${targetAuthor.id})`);
-            migratedCount++;
+        // 3. Asignar autor por defecto a cualquier canción que aún tenga authorId NULL
+        const remainingNulls = await prisma.$executeRawUnsafe(`
+            UPDATE songs
+            SET "authorId" = ${defaultAuthorId}
+            WHERE "authorId" IS NULL;
+        `);
+        if (remainingNulls > 0) {
+            console.log(`ℹ️ Asignado autor "Desconocido" a ${remainingNulls} canciones sin autor.`);
         }
-
-        console.log(`\n🎉 Migración completada exitosamente: ${migratedCount} canciones asignadas a sus respectivos autores.`);
 
         const totalAuthors = await prisma.author.count();
-        console.log(`Total de autores en base de datos: ${totalAuthors}`);
+        const totalSongs = await prisma.song.count();
+        console.log(`🎉 Migración finalizada con éxito. Autores en base de datos: ${totalAuthors}, Canciones: ${totalSongs}.`);
     } catch (error) {
-        console.error('❌ Error durante la migración de autores:', error);
-        process.exit(1);
+        console.error('❌ Error durante la migración de autores:', error.message);
     } finally {
         await prisma.$disconnect();
     }
 }
 
-migrateArtistsToAuthors();
+if (require.main === module) {
+    migrateArtistsToAuthors();
+}
+
+module.exports = migrateArtistsToAuthors;
+

@@ -15,8 +15,8 @@ model Song {
   url_song   String?
   categories Category[]
   categoryId Int?
-  author     Author     @relation(fields: [authorId], references: [id])
-  authorId   Int
+  author     Author?    @relation(fields: [authorId], references: [id])
+  authorId   Int?
   misaSongs  MisaSong[]
   active     Boolean    @default(true)
   userId     Int?

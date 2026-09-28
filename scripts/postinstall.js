@@ -10,6 +10,13 @@ if (process.env.VERCEL) {
     try {
         execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit' });
         console.log('✅ Base de datos de producción sincronizada exitosamente.');
+
+        try {
+            console.log('🔄 Ejecutando migración de datos de autores...');
+            execSync('node scripts/migrate_artist_to_author.js', { stdio: 'inherit' });
+        } catch (migErr) {
+            console.warn('⚠️ Nota sobre migración de autores:', migErr.message);
+        }
     } catch (error) {
         console.warn('⚠️ No se pudo ejecutar prisma db push durante el build de Vercel (típico por IPv6 de Supabase en AWS Lambda):', error.message);
         console.warn('ℹ️ El build continuará normalmente.');
