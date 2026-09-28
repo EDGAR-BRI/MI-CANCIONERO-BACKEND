@@ -20,7 +20,8 @@ const chordProUtils = require('../utils/chordpro.utils');
  */
 exports.generate = async (req, res) => {
     try {
-        const { type, title, tone, category, lyrics, artist } = req.body;
+        const { type, title, tone, category, lyrics, artist, author } = req.body;
+        const authorParam = author || artist || '';
 
         // Validación de parámetros
         if (!type || !title || !tone) {
@@ -45,13 +46,13 @@ exports.generate = async (req, res) => {
 
         // Generar según el tipo solicitado
         if (type === 'full') {
-            const artistInfo = artist ? ` de ${artist}` : '';
-            console.log(`Generando canción completa: "${title}"${artistInfo} en tono ${tone}, categoría: ${category || 'Entrada'}`);
+            const authorInfo = authorParam ? ` de ${authorParam}` : '';
+            console.log(`Generando canción completa: "${title}"${authorInfo} en tono ${tone}, categoría: ${category || 'Entrada'}`);
             chordProResult = await aiService.generateSongWithChords(
                 title,
                 tone,
                 category || 'Entrada',
-                artist || ''
+                authorParam
             );
         } else if (type === 'autocomplete') {
             console.log(`Autocompletando acordes para: "${title}" en tono ${tone}`);
@@ -173,7 +174,8 @@ exports.autocompleteChordsForLyrics = async (req, res) => {
  */
 exports.searchSongByLyrics = async (req, res) => {
     try {
-        const { lyricFragment, artist, title } = req.body;
+        const { lyricFragment, artist, author, title } = req.body;
+        const authorParam = author || artist || '';
 
         // Validación de parámetros
         if (!lyricFragment || lyricFragment.trim().length === 0) {
@@ -183,17 +185,17 @@ exports.searchSongByLyrics = async (req, res) => {
         }
 
         console.log(`Buscando canción por fragmento: "${lyricFragment.substring(0, 50)}..."`);
-        if (artist) console.log(`  - Artista (pista): ${artist}`);
+        if (authorParam) console.log(`  - Autor/Artista (pista): ${authorParam}`);
         if (title) console.log(`  - Título (pista): ${title}`);
 
         // Llamar al servicio de IA para buscar la canción
         const result = await aiService.searchSongByLyrics(
             lyricFragment,
-            artist || '',
+            authorParam,
             title || ''
         );
 
-        // El servicio ya devuelve un objeto con title, artist, key, chordPro
+        // El servicio ya devuelve un objeto con title, artist/author, key, chordPro
         const chordProResult = result.chordPro;
 
         // Validar que el resultado sea ChordPro válido
@@ -202,7 +204,8 @@ exports.searchSongByLyrics = async (req, res) => {
             console.warn('La IA no devolvió un formato ChordPro válido, intentando formatear...');
             finalChordPro = chordProUtils.formatAsChordPro(chordProResult, {
                 title: result.title,
-                key: result.key
+                key: result.key,
+                author: result.author || result.artist
             });
         }
 
@@ -211,6 +214,8 @@ exports.searchSongByLyrics = async (req, res) => {
         const metadata = chordProUtils.extractMetadata(finalChordPro);
         const validation = chordProUtils.validateChords(chords);
 
+        const foundAuthor = result.author || result.artist || metadata.author || metadata.artist || '';
+
         // Responder con el resultado
         res.status(200).json({
             success: true,
@@ -218,7 +223,8 @@ exports.searchSongByLyrics = async (req, res) => {
             chordPro: finalChordPro,
             metadata: {
                 title: result.title || metadata.title || 'Canción encontrada',
-                artist: result.artist || metadata.artist || '',
+                author: foundAuthor,
+                artist: foundAuthor,
                 key: result.key || metadata.key || 'C',
                 ...metadata
             },

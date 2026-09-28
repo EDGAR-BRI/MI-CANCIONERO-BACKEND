@@ -18,13 +18,20 @@ const allowedOrigins = [
     ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : [])
 ];
 
-const isLocalhostOrigin = (origin) => /^https?:\/\/localhost:\d+$/.test(origin);
+const isLocalOrPrivateNetworkOrigin = (origin) => {
+    if (!origin) return false;
+    return (
+        /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+        /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
+        /^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)
+    );
+};
 
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || isLocalhostOrigin(origin)) {
+        if (allowedOrigins.indexOf(origin) !== -1 || isLocalOrPrivateNetworkOrigin(origin)) {
             callback(null, true);
         } else {
             console.log("Blocked by CORS:", origin);

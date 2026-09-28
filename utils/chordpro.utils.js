@@ -14,7 +14,7 @@ function isValidChordPro(text) {
 
     // Verificar que tenga al menos algunos elementos de ChordPro
     const hasChords = /\[[A-G][#b]?[m]?[0-9]?[^[\]]*\]/.test(text);
-    const hasDirectives = /\{(title|t|subtitle|st|key|time|tempo|artist|composer):[^}]+\}/.test(text);
+    const hasDirectives = /\{(title|t|subtitle|st|key|time|tempo|artist|author|composer):[^}]+\}/.test(text);
     const hasSections = /\[(Verse|Chorus|Bridge|Intro|Outro|Pre-Chorus|Interlude)\]/i.test(text);
 
     return hasChords || hasDirectives || hasSections;
@@ -51,7 +51,7 @@ function extractMetadata(chordProText) {
     if (!chordProText) return {};
 
     const metadata = {};
-    const directiveRegex = /\{(title|t|subtitle|st|key|time|tempo|artist|composer):([^}]+)\}/gi;
+    const directiveRegex = /\{(title|t|subtitle|st|key|time|tempo|artist|author|composer):([^}]+)\}/gi;
     let match;
 
     while ((match = directiveRegex.exec(chordProText)) !== null) {
@@ -61,7 +61,10 @@ function extractMetadata(chordProText) {
         // Normalizar nombres de directivas
         if (key === 't') metadata.title = value;
         else if (key === 'st') metadata.subtitle = value;
-        else metadata[key] = value;
+        else if (key === 'artist' || key === 'composer') {
+            metadata.author = value;
+            metadata[key] = value;
+        } else metadata[key] = value;
     }
 
     return metadata;
@@ -101,8 +104,9 @@ function formatAsChordPro(text, metadata = {}) {
     if (metadata.key) {
         formatted += `{key: ${metadata.key}}\n`;
     }
-    if (metadata.artist) {
-        formatted += `{artist: ${metadata.artist}}\n`;
+    const authorVal = metadata.author || metadata.artist;
+    if (authorVal) {
+        formatted += `{author: ${authorVal}}\n`;
     }
     if (metadata.tempo) {
         formatted += `{tempo: ${metadata.tempo}}\n`;

@@ -312,6 +312,7 @@ Responde SOLO con el objeto JSON, sin texto adicional.`;
             throw new Error('La respuesta no contiene el campo chordPro');
         }
 
+        result.author = result.author || result.artist || '';
         return result;
     } catch (error) {
         console.error('❌ Error al buscar canción con IA:');

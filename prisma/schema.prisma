@@ -10,18 +10,29 @@ datasource db {
 model Song {
   id         Int        @id @default(autoincrement())
   title      String
-  artist     String
   content    String
   key        String
   url_song   String?
   categories Category[]
   categoryId Int?
+  author     Author     @relation(fields: [authorId], references: [id])
+  authorId   Int
   misaSongs  MisaSong[]
   active     Boolean    @default(true)
   userId     Int?
   user       User?      @relation(fields: [userId], references: [id])
 
   @@map("songs")
+}
+
+model Author {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  songs     Song[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("authors")
 }
 
 model User {
