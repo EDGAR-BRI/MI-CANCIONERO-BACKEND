@@ -4,24 +4,85 @@ const cache = require('../services/cache.service');
 const SONGS_LIST_TTL = 3600; // 1 hour
 const SONG_DETAIL_TTL = 900; // 15 minutes
 
-exports.getAllSongs = async (req, res) => {
-    try {
-        const { q, categoryId, limit } = req.query;
-        const where = {};
+const formatSong = (song) => {
+    if (!song) return song;
+    const categories = song.categories || [];
+    return {
+        ...song,
+        category: categories[0] || null,
+        categoryId: categories[0]?.id || song.categoryId || null,
+        author: song.author || null,
+        authorId: song.authorId || song.author?.id || null,
+    };
+};
 
-        if (categoryId) {
-            where.categoryId = parseInt(categoryId);
+const resolveAuthorId = async (authorId, authorName) => {
+    if (authorId !== undefined && authorId !== null && authorId !== '') {
+        const parsed = parseInt(authorId);
+        if (!isNaN(parsed)) return parsed;
+    }
+
+    if (authorName && typeof authorName === 'string' && authorName.trim()) {
+        const trimmed = authorName.trim();
+        let author = await prisma.author.findFirst({
+            where: {
+                name: {
+                    equals: trimmed,
+                    mode: 'insensitive'
+                }
+            }
+        });
+
+        if (!author) {
+            author = await prisma.author.create({
+                data: { name: trimmed }
+            });
+            await cache.delPattern('authors:*');
         }
 
-        // By default show only active, unless 'all' query param is present
-        // However, for admin views we might want all.
-        // Let's check headers or a specific query param.
-        // For simplicity: if req.user has permission 'song.edit', show all?
-        // Or just add a query param 'includeInactive=true'
-        // Check role from optionalAuth
-        const isAdmin = req.user?.role === 'ADMIN';
+        return author.id;
+    }
 
-        // Default: Show only active songs
+    // Default: 'Desconocido'
+    let defaultAuthor = await prisma.author.findUnique({
+        where: { name: 'Desconocido' }
+    });
+
+    if (!defaultAuthor) {
+        defaultAuthor = await prisma.author.create({
+            data: { name: 'Desconocido' }
+        });
+        await cache.delPattern('authors:*');
+    }
+
+    return defaultAuthor.id;
+};
+
+exports.getAllSongs = async (req, res) => {
+    try {
+        const { q, categoryId, categoryIds, authorId, limit } = req.query;
+        const where = {};
+
+        if (categoryIds) {
+            const ids = Array.isArray(categoryIds)
+                ? categoryIds.map(Number)
+                : String(categoryIds).split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+            if (ids.length > 0) {
+                where.categories = { some: { id: { in: ids } } };
+            }
+        } else if (categoryId) {
+            where.categories = { some: { id: parseInt(categoryId) } };
+        }
+
+        if (authorId) {
+            const parsedAuthorId = parseInt(authorId);
+            if (!isNaN(parsedAuthorId)) {
+                where.authorId = parsedAuthorId;
+            }
+        }
+
+        // Default: Show only active songs unless user is ADMIN and specifies active filter
+        const isAdmin = req.user?.role === 'ADMIN';
         let activeFilter = true;
 
         if (isAdmin) {
@@ -36,42 +97,44 @@ exports.getAllSongs = async (req, res) => {
             where.active = activeFilter;
         }
 
-        // If searching, we currently filter in memory, so we can't limit in DB efficiently without moving search to DB.
-        // For now, if NO search query, we limit in DB.
-        // If there IS a search query, we simply fetch all matching and then potentially slice (though the user requirement is mainly for the home page which has no query).
         const queryOptions = {
             where,
             orderBy: { id: 'desc' }
         };
 
+        const catCacheTag = categoryIds ? `cats:${Array.isArray(categoryIds) ? categoryIds.join(',') : categoryIds}` : (categoryId || 'all');
+        const authorCacheTag = authorId || 'all';
+
         if (!q) {
-            const cacheKey = `songs:list:${categoryId || 'all'}:${activeFilter}`;
+            const cacheKey = `songs:list:${catCacheTag}:${authorCacheTag}:${activeFilter}`;
             const cached = await cache.get(cacheKey);
             if (cached) return res.json(cached);
 
             queryOptions.select = {
                 id: true,
                 title: true,
-                artist: true,
                 key: true,
                 url_song: true,
                 active: true,
                 categoryId: true,
-                category: true,
+                categories: true,
+                authorId: true,
+                author: true,
                 user: { select: { name: true } }
             };
         } else {
-            queryOptions.include = { category: true, user: { select: { name: true } } };
+            queryOptions.include = { categories: true, author: true, user: { select: { name: true } } };
         }
 
         if (!q && limit) {
             queryOptions.take = parseInt(limit);
         }
 
-        const songs = await prisma.song.findMany(queryOptions);
+        const rawSongs = await prisma.song.findMany(queryOptions);
+        const songs = rawSongs.map(formatSong);
 
         if (!q) {
-            const cacheKey = `songs:list:${categoryId || 'all'}:${activeFilter}`;
+            const cacheKey = `songs:list:${catCacheTag}:${authorCacheTag}:${activeFilter}`;
             await cache.set(cacheKey, songs, SONGS_LIST_TTL);
             return res.json(songs);
         }
@@ -90,38 +153,64 @@ exports.getAllSongs = async (req, res) => {
 
         const filteredSongs = songs.filter((song) => {
             const cleanContent = stripChords(song.content);
+            const authorName = song.author?.name || '';
             return (
                 normalize(song.title).includes(search) ||
-                normalize(song.artist).includes(search) || // Author search is already covered here
+                normalize(authorName).includes(search) ||
                 normalize(cleanContent).includes(search)
             );
         });
 
         res.json(filteredSongs);
     } catch (error) {
+        console.error('Error in getAllSongs:', error);
         res.status(500).json({ error: error.message });
     }
 };
 
 exports.createSong = async (req, res) => {
-    const { title, artist, content, key, url_song, categoryId } = req.body;
+    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds } = req.body;
     try {
+        let targetCategoryIds = [];
+        if (Array.isArray(categoryIds)) {
+            targetCategoryIds = categoryIds.map(id => parseInt(id)).filter(id => !isNaN(id));
+        } else if (categoryIds) {
+            targetCategoryIds = String(categoryIds).split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+        } else if (categoryId !== undefined && categoryId !== null && categoryId !== '') {
+            const parsed = parseInt(categoryId);
+            if (!isNaN(parsed)) targetCategoryIds = [parsed];
+        }
+
+        const targetAuthorId = await resolveAuthorId(authorId, authorName);
+
+        const createData = {
+            title,
+            content,
+            key,
+            url_song,
+            authorId: targetAuthorId,
+            categoryId: targetCategoryIds[0] || null,
+            active: true,
+            userId: req.user ? req.user.id : null,
+        };
+
+        if (targetCategoryIds.length > 0) {
+            createData.categories = {
+                connect: targetCategoryIds.map(id => ({ id }))
+            };
+        }
+
         const song = await prisma.song.create({
-            data: {
-                title,
-                artist,
-                content,
-                key,
-                url_song,
-                categoryId: parseInt(categoryId),
-                active: true,
-                userId: req.user ? req.user.id : null
-            },
+            data: createData,
+            include: { categories: true, author: true, user: { select: { name: true } } }
         });
+
         await cache.delPattern('songs:list:*');
+        await cache.delPattern('authors:*');
         await cache.del('stats');
-        res.json(song);
+        res.json(formatSong(song));
     } catch (error) {
+        console.error('Error in createSong:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -135,39 +224,64 @@ exports.getSongById = async (req, res) => {
 
         const song = await prisma.song.findUnique({
             where: { id: parseInt(id) },
-            include: { category: true, user: { select: { name: true } } },
+            include: { categories: true, author: true, user: { select: { name: true } } },
         });
         if (!song) return res.status(404).json({ error: 'Song not found' });
 
-        await cache.set(cacheKey, song, SONG_DETAIL_TTL);
-        res.json(song);
+        const formatted = formatSong(song);
+        await cache.set(cacheKey, formatted, SONG_DETAIL_TTL);
+        res.json(formatted);
     } catch (error) {
+        console.error('Error in getSongById:', error);
         res.status(500).json({ error: error.message });
     }
 };
 
 exports.updateSong = async (req, res) => {
     const { id } = req.params;
-    const { title, artist, content, key, url_song, categoryId, active } = req.body;
+    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds, active } = req.body;
     try {
         const data = {};
         if (title !== undefined) data.title = title;
-        if (artist !== undefined) data.artist = artist;
         if (content !== undefined) data.content = content;
         if (key !== undefined) data.key = key;
         if (url_song !== undefined) data.url_song = url_song;
-        if (categoryId !== undefined) data.categoryId = parseInt(categoryId);
         if (active !== undefined) data.active = active;
+
+        if (authorId !== undefined || authorName !== undefined) {
+            data.authorId = await resolveAuthorId(authorId, authorName);
+        }
+
+        let targetCategoryIds = null;
+        if (Array.isArray(categoryIds)) {
+            targetCategoryIds = categoryIds.map(val => parseInt(val)).filter(val => !isNaN(val));
+        } else if (typeof categoryIds === 'string' && categoryIds.trim() !== '') {
+            targetCategoryIds = categoryIds.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+        } else if (categoryId !== undefined && categoryId !== null && categoryId !== '') {
+            const parsed = parseInt(categoryId);
+            if (!isNaN(parsed)) targetCategoryIds = [parsed];
+        }
+
+        if (targetCategoryIds !== null) {
+            data.categories = {
+                set: targetCategoryIds.map(catId => ({ id: catId }))
+            };
+            data.categoryId = targetCategoryIds[0] || null;
+        }
 
         const song = await prisma.song.update({
             where: { id: parseInt(id) },
-            data
+            data,
+            include: { categories: true, author: true, user: { select: { name: true } } }
         });
+
         await cache.delPattern('songs:list:*');
         await cache.del(`songs:detail:${id}`);
+        await cache.delPattern('authors:*');
         await cache.del('stats');
-        res.json(song);
+        res.json(formatSong(song));
     } catch (error) {
+        console.error('Error in updateSong:', error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -180,9 +294,11 @@ exports.deleteSong = async (req, res) => {
         });
         await cache.delPattern('songs:list:*');
         await cache.del(`songs:detail:${id}`);
+        await cache.delPattern('authors:*');
         await cache.del('stats');
         res.json({ message: 'Song deleted successfully' });
     } catch (error) {
+        console.error('Error in deleteSong:', error);
         res.status(500).json({ error: error.message });
     }
 };

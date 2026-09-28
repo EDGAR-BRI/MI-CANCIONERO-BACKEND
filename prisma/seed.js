@@ -123,34 +123,61 @@ async function main() {
 
     console.log('Admin user created.');
 
+    // Authors
+    const authorDesconocido = await prisma.author.upsert({
+        where: { name: 'Desconocido' },
+        update: {},
+        create: { name: 'Desconocido' },
+    });
+
+    const authorMarcosWitt = await prisma.author.upsert({
+        where: { name: 'Marcos Witt' },
+        update: {},
+        create: { name: 'Marcos Witt' },
+    });
+
+    const authorPalabraEnAccion = await prisma.author.upsert({
+        where: { name: 'Palabra en Acción' },
+        update: {},
+        create: { name: 'Palabra en Acción' },
+    });
+
+    console.log('Authors created.');
+
     // Songs
     await prisma.song.create({
         data: {
             title: 'Tu Fidelidad',
-            artist: 'Marcos Witt',
+            authorId: authorMarcosWitt.id,
             content: 'Tu fid[C]elidad es grande...',
             key: 'D',
-            categoryId: catAdoracion.id,
+            categories: {
+                connect: [{ id: catAdoracion.id }, { id: catAlabanza.id }],
+            },
         },
     });
 
     await prisma.song.create({
         data: {
             title: 'Renuévame',
-            artist: 'Marcos Witt',
+            authorId: authorMarcosWitt.id,
             content: 'Renuéva[Dm]me, Señor Jesús...',
             key: 'D',
-            categoryId: catAdoracion.id,
+            categories: {
+                connect: [{ id: catAdoracion.id }],
+            },
         },
     });
 
     await prisma.song.create({
         data: {
             title: 'Cantaré al Señor por siempre',
-            artist: 'Palabra en Acción',
+            authorId: authorPalabraEnAccion.id,
             content: 'Cant[Em]aré al Señor por siempre, su diestra es todo poder...',
             key: 'Em',
-            categoryId: catAlabanza.id,
+            categories: {
+                connect: [{ id: catAlabanza.id }],
+            },
         },
     });
 

@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1,
+    "nombre": "Entrada"
+  },
+  {
+    "id": 2,
+    "nombre": "Piedad"
+  },
+  {
+    "id": 3,
+    "nombre": "Gloria"
+  },
+  {
+    "id": 4,
+    "nombre": "Aleluya"
+  },
+  {
+    "id": 5,
+    "nombre": "Ofertorio"
+  },
+  {
+    "id": 6,
+    "nombre": "Santo"
+  },
+  {
+    "id": 7,
+    "nombre": "Cordero"
+  },
+  {
+    "id": 8,
+    "nombre": "Comunión"
+  },
+  {
+    "id": 9,
+    "nombre": "Salida"
+  }
+]

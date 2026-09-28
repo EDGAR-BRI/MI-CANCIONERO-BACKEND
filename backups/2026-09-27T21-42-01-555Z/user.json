@@ -1,0 +1,37 @@
+[
+  {
+    "id": 1,
+    "name": "Admin User",
+    "email": "admin@admin.com",
+    "password": "$2b$10$VPrpKdVA3FnHvh9EZ1YH5.kA4Ref7w/3jC9nYF3fknmyWu9YsgKJy",
+    "roleId": 1
+  },
+  {
+    "id": 5,
+    "name": "Ericraft BM",
+    "email": "erickagosto124@gmail.com",
+    "password": "$2b$10$90vQ6S/kBQxce5JIGnN/KO9xkOifjrO9VZgTxojdRGqRQ9irO38QC",
+    "roleId": 2
+  },
+  {
+    "id": 6,
+    "name": "Edgar Briceño",
+    "email": "edgarprueba26@gmail.com",
+    "password": "$2b$10$mlhcoKoT5L/hUdgWM1lIK.r4rA4miCMYZ6uVIIoxReXF5GRWe/Ucu",
+    "roleId": 2
+  },
+  {
+    "id": 4,
+    "name": "Edgar Briceño",
+    "email": "edgardev26@gmail.com",
+    "password": "$2b$10$MlaFkpY3IN51v9lz6FI/ReeXIVSz1sXlaUErGgKr2WDjen3X3O5eq",
+    "roleId": 2
+  },
+  {
+    "id": 2,
+    "name": "Edgar Briceño",
+    "email": "edgarbriceno26@gmail.com",
+    "password": "$2b$10$dCMmmAhaNFvsAX5s/YNSjO3i3f7Ava9/HwLqaHf9rl0JHCSzwO72W",
+    "roleId": 1
+  }
+]

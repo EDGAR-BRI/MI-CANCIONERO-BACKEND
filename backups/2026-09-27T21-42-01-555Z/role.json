@@ -1,0 +1,60 @@
+[
+  {
+    "id": 1,
+    "name": "ADMIN",
+    "permissions": [
+      {
+        "id": 1,
+        "name": "view.admin"
+      },
+      {
+        "id": 2,
+        "name": "user.manage"
+      },
+      {
+        "id": 3,
+        "name": "song.create"
+      },
+      {
+        "id": 4,
+        "name": "song.edit"
+      },
+      {
+        "id": 5,
+        "name": "song.delete"
+      },
+      {
+        "id": 6,
+        "name": "misa.create"
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "name": "USER",
+    "permissions": [
+      {
+        "id": 6,
+        "name": "misa.create"
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "name": "MUSICO",
+    "permissions": [
+      {
+        "id": 3,
+        "name": "song.create"
+      },
+      {
+        "id": 4,
+        "name": "song.edit"
+      },
+      {
+        "id": 6,
+        "name": "misa.create"
+      }
+    ]
+  }
+]
