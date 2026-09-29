@@ -14,7 +14,8 @@
     "db:reset": "prisma migrate reset",
     "db:deploy": "prisma migrate deploy",
     "auth:migrate-users": "node scripts/migrate_users_to_supabase_auth.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -22,7 +23,8 @@
   "type": "commonjs",
   "devDependencies": {
     "nodemon": "^3.1.11",
-    "prisma": "^7.2.0"
+    "prisma": "^7.2.0",
+    "vitest": "^5.0.2"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.2.0",
