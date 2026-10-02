@@ -1,5 +1,6 @@
 const prisma = require('../prismaClient');
 const cache = require('../services/cache.service');
+const { generateSongPdf } = require('../services/pdf.service');
 
 const SONGS_LIST_TTL = 3600; // 1 hour
 const SONG_DETAIL_TTL = 900; // 15 minutes
@@ -277,6 +278,7 @@ exports.updateSong = async (req, res) => {
 
         await cache.delPattern('songs:list:*');
         await cache.del(`songs:detail:${id}`);
+        await cache.delPattern(`songs:pdf:${id}:*`);
         await cache.delPattern('authors:*');
         await cache.del('stats');
         res.json(formatSong(song));
@@ -294,11 +296,67 @@ exports.deleteSong = async (req, res) => {
         });
         await cache.delPattern('songs:list:*');
         await cache.del(`songs:detail:${id}`);
+        await cache.delPattern(`songs:pdf:${id}:*`);
         await cache.delPattern('authors:*');
         await cache.del('stats');
         res.json({ message: 'Song deleted successfully' });
     } catch (error) {
         console.error('Error in deleteSong:', error);
         res.status(500).json({ error: error.message });
+    }
+};
+
+exports.exportSongPdf = async (req, res) => {
+    const { id } = req.params;
+    const withChords = req.query.withChords !== 'false';
+    const targetTone = req.query.tone ? String(req.query.tone).trim() : null;
+
+    try {
+        const songId = parseInt(id);
+        if (isNaN(songId)) {
+            return res.status(400).json({ error: 'ID de canción inválido' });
+        }
+
+        const toneCacheKey = targetTone ? targetTone.replace(/#/g, 'sharp') : 'orig';
+        const cacheKey = `songs:pdf:${songId}:${withChords ? 'chords' : 'lyrics'}:${toneCacheKey}`;
+        const cachedPdf = await cache.get(cacheKey);
+
+        if (cachedPdf) {
+            const buffer = Buffer.from(cachedPdf, 'base64');
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${songId}-cancion.pdf"`);
+            res.setHeader('Content-Length', buffer.length);
+            return res.send(buffer);
+        }
+
+        const song = await prisma.song.findUnique({
+            where: { id: songId },
+            include: { categories: true, author: true, user: { select: { name: true } } },
+        });
+
+        if (!song) {
+            return res.status(404).json({ error: 'Canción no encontrada' });
+        }
+
+        const buffer = await generateSongPdf(song, {
+            withChords,
+            tone: targetTone || song.key
+        });
+
+        await cache.set(cacheKey, buffer.toString('base64'), 3600);
+
+        const sanitizedTitle = (song.title || 'cancion')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9_\-]/g, '_')
+            .toLowerCase();
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${sanitizedTitle}.pdf"`);
+        res.setHeader('Content-Length', buffer.length);
+        return res.send(buffer);
+    } catch (error) {
+        console.error('Error in exportSongPdf:', error);
+        res.status(500).json({ error: 'Error al generar el PDF de la canción' });
     }
 };
