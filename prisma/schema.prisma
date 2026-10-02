@@ -79,26 +79,28 @@ model Category {
 }
 
 model Misa {
-  id         Int        @id @default(autoincrement())
-  title      String
-  dateCreate DateTime   @default(now())
-  dateMisa   DateTime
-  misaSongs  MisaSong[]
-  visibility String     @default("PUBLIC")
-  shareToken String?    @default(uuid())
-  editToken  String?    @default(uuid())
-  userId     Int?
-  user       User?      @relation(fields: [userId], references: [id])
-  ministryId Int?
-  ministry   Ministry?  @relation(fields: [ministryId], references: [id])
+  id          Int          @id @default(autoincrement())
+  title       String
+  dateCreate  DateTime     @default(now())
+  dateMisa    DateTime
+  misaSongs   MisaSong[]
+  misaMoments MisaMoment[]
+  visibility  String       @default("PUBLIC")
+  shareToken  String?      @default(uuid())
+  editToken   String?      @default(uuid())
+  userId      Int?
+  user        User?        @relation(fields: [userId], references: [id])
+  ministryId  Int?
+  ministry    Ministry?    @relation(fields: [ministryId], references: [id])
 
   @@map("misa")
 }
 
 model Moment {
-  id        Int        @id @default(autoincrement())
-  nombre    String     @unique @db.VarChar(50)
-  misaSongs MisaSong[]
+  id          Int          @id @default(autoincrement())
+  nombre      String       @unique @db.VarChar(50)
+  misaSongs   MisaSong[]
+  misaMoments MisaMoment[]
 
   @@map("moment")
 }
@@ -112,8 +114,21 @@ model MisaSong {
   moment   Moment? @relation(fields: [momentId], references: [id], onDelete: Cascade)
   momentId Int?
   key      String? @db.VarChar(10)
+  order    Int     @default(0)
 
   @@map("missa_song")
+}
+
+model MisaMoment {
+  id       Int    @id @default(autoincrement())
+  misa     Misa   @relation(fields: [misaId], references: [id], onDelete: Cascade)
+  misaId   Int
+  moment   Moment @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  momentId Int
+  order    Int    @default(0)
+
+  @@unique([misaId, momentId])
+  @@map("misa_moments")
 }
 
 model Ministry {

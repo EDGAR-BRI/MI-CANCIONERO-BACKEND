@@ -95,5 +95,51 @@ const delPattern = async (pattern) => {
     }
 };
 
-module.exports = { get, set, del, delPattern };
+const getStatus = async () => {
+    let connected = false;
+    let type = 'Memoria Local (Fallback)';
+    let pingLatencyMs = null;
 
+    if (isUpstash) {
+        try {
+            const start = Date.now();
+            const pong = await redisClient.ping();
+            pingLatencyMs = Date.now() - start;
+            if (pong === 'PONG' || pong) {
+                connected = true;
+                type = 'Upstash Redis (Cloud)';
+            }
+        } catch (e) {
+            connected = false;
+            type = 'Upstash Redis (Error conexión)';
+        }
+    } else if (redisClient) {
+        try {
+            if (redisClient.isReady) {
+                const start = Date.now();
+                const pong = await redisClient.ping();
+                pingLatencyMs = Date.now() - start;
+                if (pong === 'PONG') {
+                    connected = true;
+                    type = `Redis Local (${process.env.REDIS_HOST || '127.0.0.1'}:${process.env.REDIS_PORT || 6379})`;
+                }
+            } else {
+                connected = false;
+                type = 'Memoria Local (Servidor Redis inactivo)';
+            }
+        } catch (e) {
+            connected = false;
+            type = 'Memoria Local (Redis desconectado)';
+        }
+    }
+
+    return {
+        connected,
+        status: connected ? 'CONECTADO' : 'DESCONECTADO',
+        type,
+        latencyMs: pingLatencyMs,
+        memoryCacheKeys: memoryCache.size,
+    };
+};
+
+module.exports = { get, set, del, delPattern, getStatus };
