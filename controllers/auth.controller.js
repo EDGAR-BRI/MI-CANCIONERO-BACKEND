@@ -23,10 +23,11 @@ const getDefaultUserRole = async () => {
 };
 
 const setAuthCookies = (res, { token, refreshToken, rememberMe = true }) => {
+    const isProduction = process.env.NODE_ENV === 'production';
     const baseCookieOptions = {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
         path: '/'
     };
 
@@ -325,7 +326,10 @@ exports.me = (req, res) => {
 // 7. Update current user's profile (name, avatarUrl, phoneNumber)
 exports.updateProfile = async (req, res) => {
     try {
-        const userId = req.user.id;
+        const userId = Number(req.user?.id);
+        if (!userId || isNaN(userId)) {
+            return res.status(401).json({ error: 'Usuario no autenticado válido.' });
+        }
         const { name, avatarUrl, phoneNumber } = req.body;
 
         const updateData = {};

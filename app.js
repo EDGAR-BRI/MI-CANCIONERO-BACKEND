@@ -15,7 +15,9 @@ const allowedOrigins = [
     'http://localhost:4321',
     'http://localhost:4322',
     'https://www.micancionero.online',
-    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : [])
+    'https://micancionero.online',
+    ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL.replace(/\/$/, '')] : []),
+    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim().replace(/\/$/, '')) : [])
 ];
 
 const isLocalOrPrivateNetworkOrigin = (origin) => {
@@ -27,16 +29,33 @@ const isLocalOrPrivateNetworkOrigin = (origin) => {
     );
 };
 
+const isAllowedOrigin = (origin) => {
+    if (!origin) return true;
+    const cleanOrigin = origin.replace(/\/$/, '');
+    if (allowedOrigins.includes(cleanOrigin) || isLocalOrPrivateNetworkOrigin(cleanOrigin)) {
+        return true;
+    }
+    try {
+        const url = new URL(cleanOrigin);
+        if (url.hostname === 'micancionero.online' || url.hostname.endsWith('.micancionero.online')) {
+            return true;
+        }
+        if (url.hostname.endsWith('.vercel.app')) {
+            return true;
+        }
+    } catch (e) {
+        return false;
+    }
+    return false;
+};
+
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || isLocalOrPrivateNetworkOrigin(origin)) {
+        if (!origin || isAllowedOrigin(origin)) {
             callback(null, true);
         } else {
             console.log("Blocked by CORS:", origin);
-            // Optional: return callback(new Error('Not allowed by CORS'));
-            // For debugging production issues, we might want to fail loudly or log it.
             callback(null, false);
         }
     },
