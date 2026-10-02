@@ -1,10 +1,35 @@
 const prisma = require('../prismaClient');
 const cache = require('../services/cache.service');
+const { generateMisaPdf } = require('../services/pdf.service');
 
 const MISAS_LIST_TTL = 3600; // 1 hour
 
 const getUserId = (req) => {
     return req.user?.id || null;
+};
+
+const canUserEditMisa = async (misa, userOrId) => {
+    if (!misa || !userOrId) return false;
+    const userId = typeof userOrId === 'object' ? userOrId.id : userOrId;
+    const userRole = typeof userOrId === 'object' ? userOrId.role : null;
+
+    if (userRole === 'ADMIN') return true;
+    if (misa.userId && userId === misa.userId) return true;
+
+    if (misa.ministryId && userId) {
+        const member = await prisma.ministryMember.findUnique({
+            where: {
+                ministryId_userId: {
+                    ministryId: misa.ministryId,
+                    userId: userId
+                }
+            }
+        });
+        if (member && member.status === 'ACTIVE') {
+            return true;
+        }
+    }
+    return false;
 };
 
 exports.getAllMisas = async (req, res) => {
@@ -22,19 +47,37 @@ exports.getAllMisas = async (req, res) => {
         };
 
         if (userId) {
-            whereClause.OR.push({ userId: userId });
+            whereClause.OR.push(
+                { userId: userId },
+                { ministry: { members: { some: { userId: userId, status: 'ACTIVE' } } } }
+            );
         }
 
         const misas = await prisma.misa.findMany({
             where: whereClause,
             include: {
+                misaMoments: {
+                    include: { moment: true },
+                    orderBy: { order: 'asc' }
+                },
                 misaSongs: {
                     include: {
                         song: true,
                         moment: true
-                    }
+                    },
+                    orderBy: [
+                        { order: 'asc' },
+                        { id: 'asc' }
+                    ]
                 },
-                user: { select: { name: true } }
+                user: { select: { id: true, name: true } },
+                ministry: {
+                    select: {
+                        id: true,
+                        name: true,
+                        avatarUrl: true
+                    }
+                }
             },
             orderBy: { dateMisa: 'desc' }
         });
@@ -55,42 +98,75 @@ exports.getAllMisas = async (req, res) => {
 
 exports.getMisaById = async (req, res) => {
     const { id } = req.params;
-    const { share_token: shareToken, edit_token: editToken } = req.query;
-    const userId = getUserId(req);
+    const user = req.user || null;
+    const userId = user?.id || null;
 
     try {
-        const misa = await prisma.misa.findUnique({
+        let misa = await prisma.misa.findUnique({
             where: { id: parseInt(id) },
             include: {
+                misaMoments: {
+                    include: { moment: true },
+                    orderBy: { order: 'asc' }
+                },
                 misaSongs: {
                     include: {
                         song: true,
                         moment: true
                     },
-                    orderBy: { id: 'asc' }
+                    orderBy: [
+                        { order: 'asc' },
+                        { id: 'asc' }
+                    ]
                 },
-                user: { select: { name: true } }
+                user: { select: { id: true, name: true, email: true } },
+                ministry: {
+                    select: {
+                        id: true,
+                        name: true,
+                        avatarUrl: true
+                    }
+                }
             }
         });
 
-        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+        if (!misa) return res.status(404).json({ error: 'Misa no encontrada' });
 
-        const isOwner = userId && misa.userId === userId;
-        const isPublic = misa.visibility === 'PUBLIC';
-        const hasValidShareToken = shareToken && shareToken === misa.shareToken;
-        const hasValidEditToken = editToken && editToken === misa.editToken;
-
-        const canEdit = isOwner || hasValidEditToken;
-
-        // Access control:
-        // Public -> Everyone can view
-        // Private -> Owner, EditToken, or ShareToken required to view
-        // RELAXED: User requested that knowing the ID (link) should be enough to view (Unlisted behavior)
-        /*
-        if (!isPublic && !canEdit && !hasValidShareToken) {
-            return res.status(403).json({ error: 'Access denied' });
+        // Auto-initialize default moments if this misa has none yet
+        if (!misa.misaMoments || misa.misaMoments.length === 0) {
+            const defaultMoments = await prisma.moment.findMany({ orderBy: { id: 'asc' } });
+            if (defaultMoments.length > 0) {
+                await prisma.misaMoment.createMany({
+                    data: defaultMoments.map((dm, idx) => ({
+                        misaId: misa.id,
+                        momentId: dm.id,
+                        order: idx
+                    })),
+                    skipDuplicates: true
+                });
+                misa.misaMoments = await prisma.misaMoment.findMany({
+                    where: { misaId: misa.id },
+                    include: { moment: true },
+                    orderBy: { order: 'asc' }
+                });
+            }
         }
-        */
+
+        const isOwner = Boolean(userId && misa.userId === userId);
+        const canEdit = await canUserEditMisa(misa, user);
+
+        // Opción 1: Privacidad estricta por cuenta
+        // Si la misa es privada, solo pueden acceder el dueño, miembros activos de su ministerio o admin
+        if (misa.visibility === 'PRIVATE' && !canEdit) {
+            return res.status(403).json({
+                error: misa.ministry
+                    ? `Esta misa es privada del grupo "${misa.ministry.name}".`
+                    : 'Esta misa es privada.',
+                isPrivate: true,
+                requiresAuth: !userId,
+                ministryName: misa.ministry ? misa.ministry.name : null
+            });
+        }
 
         res.json({ ...misa, isOwner, canEdit });
     } catch (error) {
@@ -99,7 +175,7 @@ exports.getMisaById = async (req, res) => {
 };
 
 exports.createMisa = async (req, res) => {
-    const { title, dateMisa, visibility } = req.body;
+    const { title, dateMisa, visibility, ministryId } = req.body;
     const userId = req.user ? req.user.id : null;
 
     try {
@@ -108,11 +184,34 @@ exports.createMisa = async (req, res) => {
                 title,
                 dateMisa: new Date(dateMisa),
                 visibility: visibility || "PUBLIC",
-                userId: userId
+                userId: userId,
+                ministryId: ministryId ? parseInt(ministryId) : null
             },
+            include: {
+                ministry: {
+                    select: {
+                        id: true,
+                        name: true,
+                        avatarUrl: true
+                    }
+                }
+            }
         });
+
+        // Initialize default moments for the new misa
+        const defaultMoments = await prisma.moment.findMany({ orderBy: { id: 'asc' } });
+        if (defaultMoments.length > 0) {
+            await prisma.misaMoment.createMany({
+                data: defaultMoments.map((dm, idx) => ({
+                    misaId: misa.id,
+                    momentId: dm.id,
+                    order: idx
+                }))
+            });
+        }
+
         await cache.delPattern('misas:*');
-        res.json(misa);
+        res.status(201).json(misa);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -120,29 +219,39 @@ exports.createMisa = async (req, res) => {
 
 exports.updateMisa = async (req, res) => {
     const { id } = req.params;
-    const { title, dateMisa, visibility } = req.body;
-    const { edit_token: editToken } = req.query;
-    const userId = req.user ? req.user.id : null;
+    const { title, dateMisa, visibility, ministryId } = req.body;
+    const user = req.user;
 
     try {
-        // Check ownership
         const existingMisa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
         if (!existingMisa) return res.status(404).json({ error: 'Misa not found' });
 
-        const isOwner = existingMisa.userId && existingMisa.userId === userId;
-        const hasValidEditToken = editToken && editToken === existingMisa.editToken;
-
-        if (!isOwner && !hasValidEditToken) {
+        const canEdit = await canUserEditMisa(existingMisa, user);
+        if (!canEdit) {
             return res.status(403).json({ error: 'Not authorized to update this misa' });
+        }
+
+        const dataToUpdate = {
+            title,
+            dateMisa: dateMisa ? new Date(dateMisa) : undefined,
+            visibility
+        };
+        if (ministryId !== undefined) {
+            dataToUpdate.ministryId = ministryId ? parseInt(ministryId) : null;
         }
 
         const misa = await prisma.misa.update({
             where: { id: parseInt(id) },
-            data: {
-                title,
-                dateMisa: dateMisa ? new Date(dateMisa) : undefined,
-                visibility
-            },
+            data: dataToUpdate,
+            include: {
+                ministry: {
+                    select: {
+                        id: true,
+                        name: true,
+                        avatarUrl: true
+                    }
+                }
+            }
         });
         await cache.delPattern('misas:*');
         res.json(misa);
@@ -153,14 +262,31 @@ exports.updateMisa = async (req, res) => {
 
 exports.deleteMisa = async (req, res) => {
     const { id } = req.params;
-    const userId = req.user ? req.user.id : null;
+    const user = req.user;
+    const userId = user?.id;
 
     try {
-        // Check ownership
         const existingMisa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
         if (!existingMisa) return res.status(404).json({ error: 'Misa not found' });
 
-        if (existingMisa.userId && existingMisa.userId !== userId) {
+        const isOwner = Boolean(userId && existingMisa.userId === userId);
+        const isAdmin = user?.role === 'ADMIN';
+        let isMinistryAdmin = false;
+        if (existingMisa.ministryId && userId) {
+            const member = await prisma.ministryMember.findUnique({
+                where: {
+                    ministryId_userId: {
+                        ministryId: existingMisa.ministryId,
+                        userId: userId
+                    }
+                }
+            });
+            if (member && member.status === 'ACTIVE' && member.role === 'ADMIN') {
+                isMinistryAdmin = true;
+            }
+        }
+
+        if (!isOwner && !isMinistryAdmin && !isAdmin) {
             return res.status(403).json({ error: 'Not authorized to delete this misa' });
         }
 
@@ -174,36 +300,282 @@ exports.deleteMisa = async (req, res) => {
     }
 };
 
-// MisaSong Management
-exports.addSongToMisa = async (req, res) => {
-    const { id } = req.params; // Misa ID
-    const { songId, momentId, key } = req.body;
-    const { edit_token: editToken } = req.query;
-    const userId = req.user ? req.user.id : null;
+// Moments Management in Misa
+exports.addMomentToMisa = async (req, res) => {
+    const { id } = req.params;
+    const { momentId, name } = req.body;
+    const user = req.user;
 
     try {
-        // Check ownership of Misa
         const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
         if (!misa) return res.status(404).json({ error: 'Misa not found' });
 
-        const isOwner = misa.userId && misa.userId === userId;
-        const hasValidEditToken = editToken && editToken === misa.editToken;
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
+            return res.status(403).json({ error: 'Not authorized to edit this misa' });
+        }
 
-        if (!isOwner && !hasValidEditToken) {
+        let targetMomentId = momentId ? parseInt(momentId) : null;
+
+        // Custom moment name provided
+        if (!targetMomentId && name && name.trim()) {
+            const trimmedName = name.trim();
+            let existingMoment = await prisma.moment.findFirst({
+                where: { nombre: { equals: trimmedName, mode: 'insensitive' } }
+            });
+            if (!existingMoment) {
+                existingMoment = await prisma.moment.create({
+                    data: { nombre: trimmedName }
+                });
+            }
+            targetMomentId = existingMoment.id;
+        }
+
+        if (!targetMomentId) {
+            return res.status(400).json({ error: 'Se requiere momentId o un nombre válido' });
+        }
+
+        // Check if already in misa
+        const existingLink = await prisma.misaMoment.findUnique({
+            where: {
+                misaId_momentId: {
+                    misaId: parseInt(id),
+                    momentId: targetMomentId
+                }
+            },
+            include: { moment: true }
+        });
+
+        if (existingLink) {
+            return res.json(existingLink);
+        }
+
+        const maxOrderMoment = await prisma.misaMoment.findFirst({
+            where: { misaId: parseInt(id) },
+            orderBy: { order: 'desc' }
+        });
+        const nextOrder = maxOrderMoment ? maxOrderMoment.order + 1 : 0;
+
+        const newMisaMoment = await prisma.misaMoment.create({
+            data: {
+                misaId: parseInt(id),
+                momentId: targetMomentId,
+                order: nextOrder
+            },
+            include: { moment: true }
+        });
+
+        await cache.delPattern('misas:*');
+        res.status(201).json(newMisaMoment);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.removeMomentFromMisa = async (req, res) => {
+    const { id, momentId } = req.params;
+    const user = req.user;
+
+    try {
+        const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
+        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
+            return res.status(403).json({ error: 'Not authorized to edit this misa' });
+        }
+
+        const mid = parseInt(id);
+        const momId = parseInt(momentId);
+
+        await prisma.misaMoment.deleteMany({
+            where: {
+                misaId: mid,
+                momentId: momId
+            }
+        });
+
+        await prisma.misaSong.deleteMany({
+            where: {
+                misaId: mid,
+                momentId: momId
+            }
+        });
+
+        await cache.delPattern('misas:*');
+        res.json({ message: 'Momento eliminado de la misa' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.reorderMoments = async (req, res) => {
+    const { id } = req.params;
+    const { orderedMomentIds } = req.body;
+    const user = req.user;
+
+    try {
+        const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
+        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
+            return res.status(403).json({ error: 'Not authorized to edit this misa' });
+        }
+
+        if (!Array.isArray(orderedMomentIds)) {
+            return res.status(400).json({ error: 'orderedMomentIds must be an array' });
+        }
+
+        const mid = parseInt(id);
+        const updates = orderedMomentIds.map((momId, idx) =>
+            prisma.misaMoment.updateMany({
+                where: { misaId: mid, momentId: parseInt(momId) },
+                data: { order: idx }
+            })
+        );
+        await prisma.$transaction(updates);
+
+        await cache.delPattern('misas:*');
+        res.json({ message: 'Momentos reordenados exitosamente' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// MisaSong Management & Reordering (Drag and Drop)
+exports.reorderSongs = async (req, res) => {
+    const { id } = req.params;
+    const { orderedSongIds, momentId } = req.body;
+    const user = req.user;
+
+    try {
+        const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
+        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
+            return res.status(403).json({ error: 'Not authorized to edit this misa' });
+        }
+
+        if (!Array.isArray(orderedSongIds)) {
+            return res.status(400).json({ error: 'orderedSongIds must be an array' });
+        }
+
+        const mid = parseInt(id);
+        const updates = orderedSongIds.map((misaSongId, idx) => {
+            const data = { order: idx };
+            if (momentId) {
+                data.momentId = parseInt(momentId);
+            }
+            return prisma.misaSong.updateMany({
+                where: { id: parseInt(misaSongId), misaId: mid },
+                data
+            });
+        });
+        await prisma.$transaction(updates);
+
+        await cache.delPattern('misas:*');
+        res.json({ message: 'Cantos reordenados exitosamente' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.addSongToMisa = async (req, res) => {
+    const { id } = req.params;
+    const { songId, momentId, key } = req.body;
+    const user = req.user;
+
+    try {
+        const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
+        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
             return res.status(403).json({ error: 'Not authorized to add songs to this misa' });
         }
+
+        const targetMomentId = momentId ? parseInt(momentId) : null;
+
+        // Auto-add moment to misa if not linked yet
+        if (targetMomentId) {
+            const momentInMisa = await prisma.misaMoment.findUnique({
+                where: {
+                    misaId_momentId: {
+                        misaId: parseInt(id),
+                        momentId: targetMomentId
+                    }
+                }
+            });
+            if (!momentInMisa) {
+                const maxOrderMoment = await prisma.misaMoment.findFirst({
+                    where: { misaId: parseInt(id) },
+                    orderBy: { order: 'desc' }
+                });
+                const nextMomOrder = maxOrderMoment ? maxOrderMoment.order + 1 : 0;
+                await prisma.misaMoment.create({
+                    data: {
+                        misaId: parseInt(id),
+                        momentId: targetMomentId,
+                        order: nextMomOrder
+                    }
+                });
+            }
+        }
+
+        const maxOrderSong = await prisma.misaSong.findFirst({
+            where: {
+                misaId: parseInt(id),
+                momentId: targetMomentId
+            },
+            orderBy: { order: 'desc' }
+        });
+        const nextOrder = maxOrderSong ? maxOrderSong.order + 1 : 0;
 
         const misaSong = await prisma.misaSong.create({
             data: {
                 misaId: parseInt(id),
                 songId: parseInt(songId),
-                momentId: momentId ? parseInt(momentId) : null,
-                key: key || null
+                momentId: targetMomentId,
+                key: key || null,
+                order: nextOrder
             },
             include: { song: true, moment: true }
         });
         await cache.delPattern('misas:*');
-        res.json(misaSong);
+        res.status(201).json(misaSong);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.updateMisaSong = async (req, res) => {
+    const { id, misaSongId } = req.params;
+    const { key, momentId } = req.body;
+    const user = req.user;
+
+    try {
+        const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
+        if (!misa) return res.status(404).json({ error: 'Misa not found' });
+
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
+            return res.status(403).json({ error: 'Not authorized to update songs in this misa' });
+        }
+
+        const updateData = {};
+        if (key !== undefined) updateData.key = key;
+        if (momentId !== undefined) updateData.momentId = momentId ? parseInt(momentId) : null;
+
+        const updatedSong = await prisma.misaSong.update({
+            where: { id: parseInt(misaSongId) },
+            data: updateData,
+            include: { song: true, moment: true }
+        });
+
+        await cache.delPattern('misas:*');
+        res.json(updatedSong);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -211,19 +583,17 @@ exports.addSongToMisa = async (req, res) => {
 
 exports.removeSongFromMisa = async (req, res) => {
     const { id, misaSongId } = req.params;
-    const { edit_token: editToken } = req.query;
-    const userId = req.user ? req.user.id : null;
+    const user = req.user;
 
     try {
         const misa = await prisma.misa.findUnique({ where: { id: parseInt(id) } });
         if (!misa) return res.status(404).json({ error: 'Misa not found' });
 
-        const isOwner = misa.userId && misa.userId === userId;
-        const hasValidEditToken = editToken && editToken === misa.editToken;
-
-        if (!isOwner && !hasValidEditToken) {
+        const canEdit = await canUserEditMisa(misa, user);
+        if (!canEdit) {
             return res.status(403).json({ error: 'Not authorized to remove songs from this misa' });
         }
+
         await prisma.misaSong.delete({
             where: { id: parseInt(misaSongId) }
         });
@@ -231,5 +601,97 @@ exports.removeSongFromMisa = async (req, res) => {
         res.json({ message: 'Song removed from misa' });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+};
+
+exports.exportMisaPdf = async (req, res) => {
+    const { id } = req.params;
+    const user = req.user || null;
+    const withChords = req.query.chords !== 'false';
+    const isDownload = req.query.download !== 'false';
+
+    try {
+        const misaId = parseInt(id);
+        if (isNaN(misaId)) {
+            return res.status(400).json({ error: 'ID de misa inválido' });
+        }
+
+        // 1. Cache lookup
+        const cacheKey = `misas:pdf:${misaId}:${withChords ? 'chords' : 'lyrics'}`;
+        const cached = await cache.get(cacheKey);
+
+        if (cached && cached.base64) {
+            const buffer = Buffer.from(cached.base64, 'base64');
+            const disposition = isDownload ? 'attachment' : 'inline';
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(cached.filename)}"`);
+            res.setHeader('X-Cache', 'HIT');
+            return res.send(buffer);
+        }
+
+        // 2. Fetch Misa with all relations from database
+        const misa = await prisma.misa.findUnique({
+            where: { id: misaId },
+            include: {
+                misaMoments: {
+                    include: { moment: true },
+                    orderBy: { order: 'asc' }
+                },
+                misaSongs: {
+                    include: {
+                        song: {
+                            include: { author: true }
+                        },
+                        moment: true
+                    },
+                    orderBy: [
+                        { order: 'asc' },
+                        { id: 'asc' }
+                    ]
+                },
+                user: { select: { id: true, name: true } },
+                ministry: {
+                    select: {
+                        id: true,
+                        name: true
+                    }
+                }
+            }
+        });
+
+        if (!misa) {
+            return res.status(404).json({ error: 'Misa no encontrada' });
+        }
+
+        // 3. Privacy permissions check
+        const canEdit = await canUserEditMisa(misa, user);
+        if (misa.visibility === 'PRIVATE' && !canEdit) {
+            return res.status(403).json({
+                error: misa.ministry
+                    ? `Esta misa es privada del grupo "${misa.ministry.name}".`
+                    : 'Esta misa es privada.'
+            });
+        }
+
+        // 4. Generate PDF buffer
+        const pdfBuffer = await generateMisaPdf(misa, { withChords });
+        const cleanTitle = (misa.title || 'Misa').replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
+        const filename = `Misa_${cleanTitle}_${withChords ? 'acordes' : 'letra'}.pdf`;
+
+        // 5. Store in cache for 24 hours
+        await cache.set(cacheKey, {
+            base64: pdfBuffer.toString('base64'),
+            filename,
+            generatedAt: Date.now()
+        }, 86400);
+
+        const disposition = isDownload ? 'attachment' : 'inline';
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(filename)}"`);
+        res.setHeader('X-Cache', 'MISS');
+        return res.send(pdfBuffer);
+    } catch (error) {
+        console.error('Error generating Misa PDF:', error);
+        res.status(500).json({ error: 'Error al generar el PDF de la misa: ' + error.message });
     }
 };
