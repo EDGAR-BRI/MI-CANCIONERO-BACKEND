@@ -12,8 +12,9 @@ model Song {
   title      String
   content    String
   key        String
-  url_song   String?
-  categories Category[]
+  url_song     String?
+  externalSlug String?    @unique
+  categories   Category[]
   categoryId Int?
   author     Author?    @relation(fields: [authorId], references: [id])
   authorId   Int?

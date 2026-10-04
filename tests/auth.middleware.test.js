@@ -94,4 +94,19 @@ describe('Auth Middleware (back/middleware/auth.middleware)', () => {
             expect(res.json).toHaveBeenCalledWith({ error: 'Missing permission: SONG_DELETE' });
         });
     });
+
+    describe('authenticateToken', () => {
+        const { authenticateToken } = require('../middleware/auth.middleware');
+
+        it('debe retornar 401 si no hay token ni refresh_token en cookies o headers', async () => {
+            req.cookies = {};
+            req.headers = {};
+
+            await authenticateToken(req, res, next);
+
+            expect(next).not.toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(401);
+            expect(res.json).toHaveBeenCalledWith({ error: 'Authentication required' });
+        });
+    });
 });

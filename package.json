@@ -15,7 +15,9 @@
     "db:deploy": "prisma migrate deploy",
     "auth:migrate-users": "node scripts/migrate_users_to_supabase_auth.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "scrape:lacuerda": "node scripts/scrape_lacuerda.js",
+    "scrape:sync-json": "node scripts/scrape_lacuerda.js --from-json"
   },
   "keywords": [],
   "author": "",

@@ -1,6 +1,7 @@
 const path = require('path');
 const pdfmake = require('pdfmake');
 const { transposeText } = require('../utils/music');
+const { sanitizeSongContent } = require('../utils/songSanitizer');
 
 // Configure pdfmake policies
 pdfmake.setUrlAccessPolicy(() => false);
@@ -205,7 +206,7 @@ const buildMisaDocDefinition = (misa, options = {}) => {
 
             const effectiveKey = ms.key || song.key;
             const originalKey = song.key;
-            let songContent = song.content || '';
+            let songContent = sanitizeSongContent(song.content || '');
 
             // Transpose if necessary
             if (effectiveKey && originalKey && effectiveKey !== originalKey) {
@@ -409,7 +410,7 @@ const buildSongDocDefinition = (song, options = {}) => {
     const effectiveKey = options.tone || song.key || 'C';
     const originalKey = song.key || 'C';
 
-    let songContent = song.content || '';
+    let songContent = sanitizeSongContent(song.content || '');
     if (effectiveKey && originalKey && effectiveKey !== originalKey) {
         try {
             songContent = transposeText(songContent, originalKey, effectiveKey);

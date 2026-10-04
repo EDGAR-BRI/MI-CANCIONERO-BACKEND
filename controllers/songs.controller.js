@@ -1,6 +1,7 @@
 const prisma = require('../prismaClient');
 const cache = require('../services/cache.service');
 const { generateSongPdf } = require('../services/pdf.service');
+const { sanitizeSongContent, normalizeSongTitle } = require('../utils/songSanitizer');
 
 const SONGS_LIST_TTL = 3600; // 1 hour
 const SONG_DETAIL_TTL = 900; // 15 minutes
@@ -170,7 +171,7 @@ exports.getAllSongs = async (req, res) => {
 };
 
 exports.createSong = async (req, res) => {
-    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds } = req.body;
+    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds, externalSlug } = req.body;
     try {
         let targetCategoryIds = [];
         if (Array.isArray(categoryIds)) {
@@ -184,11 +185,38 @@ exports.createSong = async (req, res) => {
 
         const targetAuthorId = await resolveAuthorId(authorId, authorName);
 
+        // Verificación anti-duplicados por externalSlug
+        if (externalSlug) {
+            const existingBySlug = await prisma.song.findUnique({ where: { externalSlug } });
+            if (existingBySlug) {
+                return res.status(409).json({
+                    error: `Ya existe una canción con el identificador externo "${externalSlug}" (ID: ${existingBySlug.id}).`
+                });
+            }
+        }
+
+        // Verificación anti-duplicados por título normalizado y autor
+        const normalizedNewTitle = normalizeSongTitle(title);
+        if (normalizedNewTitle) {
+            const existingSongs = await prisma.song.findMany({
+                where: targetAuthorId ? { authorId: targetAuthorId } : {},
+                select: { id: true, title: true }
+            });
+
+            const duplicate = existingSongs.find(s => normalizeSongTitle(s.title) === normalizedNewTitle);
+            if (duplicate) {
+                return res.status(409).json({
+                    error: `Ya existe una canción similar ("${duplicate.title}") registrada para este autor.`
+                });
+            }
+        }
+
         const createData = {
             title,
-            content,
+            content: sanitizeSongContent(content),
             key,
             url_song,
+            externalSlug: externalSlug || null,
             authorId: targetAuthorId,
             categoryId: targetCategoryIds[0] || null,
             active: true,
@@ -240,17 +268,44 @@ exports.getSongById = async (req, res) => {
 
 exports.updateSong = async (req, res) => {
     const { id } = req.params;
-    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds, active } = req.body;
+    const { title, authorId, authorName, content, key, url_song, categoryId, categoryIds, active, externalSlug } = req.body;
     try {
+        const songId = parseInt(id);
         const data = {};
         if (title !== undefined) data.title = title;
-        if (content !== undefined) data.content = content;
+        if (content !== undefined) data.content = sanitizeSongContent(content);
         if (key !== undefined) data.key = key;
         if (url_song !== undefined) data.url_song = url_song;
         if (active !== undefined) data.active = active;
+        if (externalSlug !== undefined) data.externalSlug = externalSlug;
 
         if (authorId !== undefined || authorName !== undefined) {
             data.authorId = await resolveAuthorId(authorId, authorName);
+        }
+
+        // Verificación anti-duplicados al actualizar
+        if (title !== undefined) {
+            const normalizedNewTitle = normalizeSongTitle(title);
+            if (normalizedNewTitle) {
+                const targetAuthorId = data.authorId !== undefined 
+                    ? data.authorId 
+                    : (await prisma.song.findUnique({ where: { id: songId }, select: { authorId: true } }))?.authorId;
+
+                const existingSongs = await prisma.song.findMany({
+                    where: {
+                        id: { not: songId },
+                        ...(targetAuthorId ? { authorId: targetAuthorId } : {})
+                    },
+                    select: { id: true, title: true }
+                });
+
+                const duplicate = existingSongs.find(s => normalizeSongTitle(s.title) === normalizedNewTitle);
+                if (duplicate) {
+                    return res.status(409).json({
+                        error: `Ya existe otra canción similar ("${duplicate.title}") registrada para este autor.`
+                    });
+                }
+            }
         }
 
         let targetCategoryIds = null;
@@ -271,7 +326,7 @@ exports.updateSong = async (req, res) => {
         }
 
         const song = await prisma.song.update({
-            where: { id: parseInt(id) },
+            where: { id: songId },
             data,
             include: { categories: true, author: true, user: { select: { name: true } } }
         });
@@ -322,10 +377,29 @@ exports.exportSongPdf = async (req, res) => {
         const cachedPdf = await cache.get(cacheKey);
 
         if (cachedPdf) {
-            const buffer = Buffer.from(cachedPdf, 'base64');
+            const base64Data = typeof cachedPdf === 'object' && cachedPdf.base64 ? cachedPdf.base64 : cachedPdf;
+            const buffer = Buffer.from(base64Data, 'base64');
+            let filename = typeof cachedPdf === 'object' && cachedPdf.filename ? cachedPdf.filename : null;
+
+            if (!filename) {
+                const song = await prisma.song.findUnique({
+                    where: { id: songId },
+                    select: { title: true }
+                });
+                const cleanTitle = (song?.title || 'Cancion')
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-zA-Z0-9_\-]/g, '_')
+                    .replace(/_+/g, '_')
+                    .replace(/^_|_$/g, '');
+                const suffix = withChords ? '' : '_letra';
+                filename = `${cleanTitle || 'Cancion'}${suffix}.pdf`;
+            }
+
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename="${songId}-cancion.pdf"`);
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
             res.setHeader('Content-Length', buffer.length);
+            res.setHeader('X-Cache', 'HIT');
             return res.send(buffer);
         }
 
@@ -343,17 +417,24 @@ exports.exportSongPdf = async (req, res) => {
             tone: targetTone || song.key
         });
 
-        await cache.set(cacheKey, buffer.toString('base64'), 3600);
-
-        const sanitizedTitle = (song.title || 'cancion')
+        const cleanTitle = (song.title || 'Cancion')
             .normalize('NFD')
             .replace(/[\u0300-\u036f]/g, '')
             .replace(/[^a-zA-Z0-9_\-]/g, '_')
-            .toLowerCase();
+            .replace(/_+/g, '_')
+            .replace(/^_|_$/g, '');
+        const suffix = withChords ? '' : '_letra';
+        const filename = `${cleanTitle || 'Cancion'}${suffix}.pdf`;
+
+        await cache.set(cacheKey, {
+            base64: buffer.toString('base64'),
+            filename
+        }, 3600);
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="${sanitizedTitle}.pdf"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
         res.setHeader('Content-Length', buffer.length);
+        res.setHeader('X-Cache', 'MISS');
         return res.send(buffer);
     } catch (error) {
         console.error('Error in exportSongPdf:', error);

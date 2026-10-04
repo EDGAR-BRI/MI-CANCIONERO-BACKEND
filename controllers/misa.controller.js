@@ -623,8 +623,9 @@ exports.exportMisaPdf = async (req, res) => {
         if (cached && cached.base64) {
             const buffer = Buffer.from(cached.base64, 'base64');
             const disposition = isDownload ? 'attachment' : 'inline';
+            const filename = cached.filename || `Misa_${misaId}_${withChords ? 'acordes' : 'letra'}.pdf`;
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(cached.filename)}"`);
+            res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
             res.setHeader('X-Cache', 'HIT');
             return res.send(buffer);
         }
@@ -675,8 +676,32 @@ exports.exportMisaPdf = async (req, res) => {
 
         // 4. Generate PDF buffer
         const pdfBuffer = await generateMisaPdf(misa, { withChords });
-        const cleanTitle = (misa.title || 'Misa').replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-        const filename = `Misa_${cleanTitle}_${withChords ? 'acordes' : 'letra'}.pdf`;
+        const rawTitle = (misa.title || 'Misa').trim();
+        const hasMisaPrefix = /^misa\b/i.test(rawTitle);
+        const cleanTitle = rawTitle
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9_\-]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_|_$/g, '');
+
+        const baseName = hasMisaPrefix ? cleanTitle : `Misa_${cleanTitle}`;
+
+        let datePart = '';
+        if (misa.dateMisa) {
+            const d = new Date(misa.dateMisa);
+            if (!isNaN(d.getTime())) {
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                datePart = `${year}-${month}-${day}`;
+            }
+        }
+
+        const suffix = withChords ? 'acordes' : 'letra';
+        const filename = datePart
+            ? `${baseName}_${datePart}_${suffix}.pdf`
+            : `${baseName}_${suffix}.pdf`;
 
         // 5. Store in cache for 24 hours
         await cache.set(cacheKey, {
@@ -687,7 +712,7 @@ exports.exportMisaPdf = async (req, res) => {
 
         const disposition = isDownload ? 'attachment' : 'inline';
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(filename)}"`);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
         res.setHeader('X-Cache', 'MISS');
         return res.send(pdfBuffer);
     } catch (error) {
