@@ -61,6 +61,8 @@ const resolveUserWithOptionalRefresh = async (req, res) => {
             email: user.email,
             name: user.name,
             avatarUrl: user.avatarUrl || null,
+            phoneNumber: user.phoneNumber || null,
+            isGoogleUser: Boolean(user.googleId),
             role: user.role.name,
             permissions: user.role.permissions.map(p => p.name)
         };

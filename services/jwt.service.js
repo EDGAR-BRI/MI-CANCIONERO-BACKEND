@@ -23,6 +23,8 @@ const generateTokens = (user) => {
         email: user.email,
         name: user.name,
         avatarUrl: user.avatarUrl || null,
+        phoneNumber: user.phoneNumber || null,
+        isGoogleUser: Boolean(user.googleId),
         role: roleName || 'USER',
         permissions
     };

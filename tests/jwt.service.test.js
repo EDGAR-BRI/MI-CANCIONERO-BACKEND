@@ -63,6 +63,20 @@ describe('JWT Service (back/services/jwt.service)', () => {
             const decoded = jwtService.verifyToken(token);
             expect(decoded.role).toBe('USER');
             expect(decoded.permissions).toEqual([]);
+            expect(decoded.phoneNumber).toBeNull();
+        });
+
+        it('debe incluir phoneNumber en el payload si el usuario lo tiene configurado', () => {
+            const userWithPhone = {
+                id: 'usr-phone-1',
+                email: 'phone@ejemplo.com',
+                name: 'Con Telefono',
+                phoneNumber: '+584121234567'
+            };
+
+            const { token } = jwtService.generateTokens(userWithPhone);
+            const decoded = jwtService.verifyToken(token);
+            expect(decoded.phoneNumber).toBe('+584121234567');
         });
     });
 

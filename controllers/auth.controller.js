@@ -112,6 +112,8 @@ exports.register = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 avatarUrl: user.avatarUrl || null,
+                phoneNumber: user.phoneNumber || null,
+                isGoogleUser: false,
                 role: user.role.name,
                 permissions: user.role.permissions.map(p => p.name)
             }
@@ -169,6 +171,8 @@ exports.login = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 avatarUrl: user.avatarUrl || null,
+                phoneNumber: user.phoneNumber || null,
+                isGoogleUser: Boolean(user.googleId),
                 role: user.role.name,
                 permissions: user.role.permissions.map(p => p.name)
             }
@@ -300,6 +304,8 @@ exports.googleCallback = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 avatarUrl: user.avatarUrl || null,
+                phoneNumber: user.phoneNumber || null,
+                isGoogleUser: true,
                 role: user.role?.name || 'USER',
                 permissions: user.role?.permissions?.map(p => p.name) || []
             }
@@ -330,7 +336,7 @@ exports.updateProfile = async (req, res) => {
         if (!userId || isNaN(userId)) {
             return res.status(401).json({ error: 'Usuario no autenticado válido.' });
         }
-        const { name, avatarUrl, phoneNumber } = req.body;
+        const { name, avatarUrl, phoneNumber, currentPassword, newPassword } = req.body;
 
         const updateData = {};
         if (name !== undefined) {
@@ -354,6 +360,34 @@ exports.updateProfile = async (req, res) => {
             } else {
                 updateData.phoneNumber = null;
             }
+        }
+
+        if (currentPassword && (!newPassword || !newPassword.trim())) {
+            return res.status(400).json({ error: 'Debes ingresar una nueva contraseña.' });
+        }
+
+        if (newPassword !== undefined && newPassword !== '') {
+            if (String(newPassword).length < 6) {
+                return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres.' });
+            }
+
+            const userRecord = await prisma.user.findUnique({ where: { id: userId } });
+            if (!userRecord) {
+                return res.status(404).json({ error: 'Usuario no encontrado.' });
+            }
+
+            // Si el usuario no fue creado con Google, o si envió contraseña actual, validarla
+            if (!userRecord.googleId || currentPassword) {
+                if (!currentPassword) {
+                    return res.status(400).json({ error: 'Debes ingresar tu contraseña actual para cambiarla.' });
+                }
+                const isMatch = await bcrypt.compare(currentPassword, userRecord.password);
+                if (!isMatch) {
+                    return res.status(400).json({ error: 'La contraseña actual es incorrecta.' });
+                }
+            }
+
+            updateData.password = await bcrypt.hash(newPassword, 10);
         }
 
         if (Object.keys(updateData).length === 0) {
@@ -384,6 +418,7 @@ exports.updateProfile = async (req, res) => {
                 email: updatedUser.email,
                 avatarUrl: updatedUser.avatarUrl || null,
                 phoneNumber: updatedUser.phoneNumber || null,
+                isGoogleUser: Boolean(updatedUser.googleId),
                 role: updatedUser.role?.name || 'USER',
                 permissions: updatedUser.role?.permissions?.map(p => p.name) || []
             }
